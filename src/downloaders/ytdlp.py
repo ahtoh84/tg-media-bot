@@ -20,6 +20,44 @@ logger = get_logger()
 # Per-connection network stall timeout (seconds). Distinct from the total
 # DOWNLOAD_TIMEOUT, which bounds the whole yt-dlp run.
 _SOCKET_TIMEOUT = 60
+# One representative, current desktop UA per browser family. These don't need
+# to match the user's *exact* installed version — sites checking UA/cookie
+# consistency are looking at browser family + OS class, not a byte-perfect
+# version match. Keep these roughly current (bump every few months).
+_BROWSER_USER_AGENTS = {
+    "chrome": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "firefox": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) "
+        "Gecko/20100101 Firefox/130.0"
+    ),
+    "edge": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"
+    ),
+    "safari": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+    ),
+    "brave": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "opera": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0"
+    ),
+    "chromium": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+}
+# Used when no cookies are involved, or browser_name isn't recognized — a
+# generic modern Chrome UA is the safest no-signal default since it's the
+# most common browser and least likely to look anomalous on its own.
+_DEFAULT_USER_AGENT = _BROWSER_USER_AGENTS["firefox"]
 
 # Extra attempts for a transient connectivity error before giving up (or
 # falling back to a proxy). Each attempt is a fresh yt-dlp process, so it
@@ -171,7 +209,22 @@ class YtDlpDownloader:
         if self.settings.use_browser_cookies:
             return ["--cookies-from-browser", self.settings.browser_name]
         return []
+        
+    def _resolve_user_agent(self, use_cookies: bool) -> str:
+        """Pick a UA that matches the cookie source browser, if any.
 
+        A UA/cookie mismatch (e.g. Firefox cookies sent with a Chrome UA) is
+        an easy signal for sites to flag. Whether cookies come live from
+        --cookies-from-browser or from an exported cookies.txt, settings.browser_name
+        is the one config value describing which browser the identity belongs
+        to, so we key off it directly in both cases.
+        """
+        if not use_cookies or not self._cookie_args():
+            return _DEFAULT_USER_AGENT
+
+        browser = (self.settings.browser_name or "").lower()
+        return _BROWSER_USER_AGENTS.get(browser, _DEFAULT_USER_AGENT)
+    
     def detect_platform(self, url: str) -> str:
         """Detect platform from URL."""
         for platform, pattern in self.PLATFORM_PATTERNS.items():
@@ -209,6 +262,7 @@ class YtDlpDownloader:
         ]
 
         cmd.extend(self._cookie_args())
+        cmd.extend(["--user-agent", self._resolve_user_agent(use_cookies=True)])
 
         cmd.append(url)
 
@@ -629,6 +683,7 @@ class YtDlpDownloader:
 
         # Suppress version update warning
         cmd.append("--no-update")
+        cmd.extend(["--user-agent", self._resolve_user_agent(use_cookies)])
 
         # Output template
         output_template = str(output_dir / "%(title)s.%(ext)s")
