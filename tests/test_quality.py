@@ -38,7 +38,10 @@ class TestVideoSelector:
 
 
 def _make_callback(data):
-    msg = SimpleNamespace(chat=SimpleNamespace(id=5), edit_text=AsyncMock())
+    msg = SimpleNamespace(
+        chat=SimpleNamespace(id=5), edit_text=AsyncMock(),
+        is_topic_message=False, message_thread_id=None,
+    )
     return SimpleNamespace(
         data=data, from_user=SimpleNamespace(id=9), message=msg, answer=AsyncMock()
     )

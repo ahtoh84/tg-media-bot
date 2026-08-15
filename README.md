@@ -147,6 +147,7 @@ All settings are loaded from `.env` (see `src/config/settings.py`).
 | `BROWSER_NAME` | no | `firefox` | Browser to read cookies from |
 | `COOKIES_FILE` | no | empty | Path to a Netscape `cookies.txt` for authenticated downloads; takes precedence over browser cookies when present (the Docker way to auth) |
 | `ALLOWED_CHATS_FILE` | no | empty | Path to a JSON file persisting group chats an allowed user has activated the bot in |
+| `TOPIC_LOCK_FILE` | no | empty | Path to a JSON file persisting per-chat forum-topic locks set via `/topic lock` |
 | `MEDIA_CACHE_FILE` | no | empty | Path to a JSON file caching `file_id`s so repeat URLs are resent instantly |
 | `PROXY_URL` | no | empty | Proxy used **only** as a fallback retry when a download fails with a geo/region block (`socks5h://…` or `http://…`) |
 | `BOT_API_HOST_PORT` | no | `8082` | Docker only: host port for the local Bot API server |
@@ -170,6 +171,10 @@ To find a user's numeric ID, have them message [@userinfobot](https://t.me/useri
 ### Use in groups
 
 The bot also works in group chats. When an allowed user uses it inside a group, that group is **activated** — its other members can then use the bot there too, without being individually allowlisted. Set `ALLOWED_CHATS_FILE` to persist activated groups across restarts (in Docker this defaults to `/data/allowed_chats.json` on the `bot-logs` volume); leave it unset to keep them in memory only.
+
+**Required one-time setup:** Telegram bots ship with "group privacy" enabled, which stops the Bot API from forwarding plain messages (like a pasted link) sent in a group — only commands, @mentions, and replies to the bot get through. To let people just paste a link, disable it: message [@BotFather](https://t.me/BotFather) → `/mybots` → your bot → **Bot Settings** → **Group Privacy** → **Turn off**, then remove and re-add the bot to any group it's already in (the change doesn't apply retroactively to existing memberships).
+
+**Forum topics:** in a group with topics enabled, every reply (status messages, the downloaded file) is posted into whichever topic the request came from — never "General" — so different topics can be used for different purposes without their results bleeding into each other. To confine the bot to one topic per group (e.g. a "bots" topic, ignoring everything posted elsewhere), send `/topic lock` **from inside that topic**. `/topic unlock` lifts the restriction, and `/topic status` shows the current lock. This is per-chat, so different groups can each lock to their own topic (or not lock at all). `/topic` itself always works regardless of the current lock, so a chat can't get stuck; set `TOPIC_LOCK_FILE` to persist locks across restarts.
 
 ### Authenticated downloads (cookies)
 

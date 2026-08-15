@@ -19,6 +19,8 @@ def _make_event(chat=None):
         chat=chat,
         answer=answer,
         _answers=answers,
+        is_topic_message=False,
+        message_thread_id=None,
     )
 
 
@@ -28,6 +30,28 @@ def _patch_allowed(monkeypatch, allowed, store=None):
     if store is not None:
         from src.services import chat_store
         monkeypatch.setattr(chat_store, "get_chat_store", lambda: store)
+
+
+def _store():
+    from src.services.chat_store import ChatStore
+    return ChatStore("")  # in-memory, no file
+
+
+class _FakeTopicLockStore:
+    """Minimal stand-in for TopicLockStore: chat_id -> locked topic_id."""
+
+    def __init__(self, locks=None):
+        self._locks = locks or {}
+
+    def get(self, chat_id):
+        return self._locks.get(chat_id)
+
+
+def _patch_topic_lock(monkeypatch, locks=None):
+    from src.services import topic_lock
+    store = _FakeTopicLockStore(locks)
+    monkeypatch.setattr(topic_lock, "get_topic_lock_store", lambda: store)
+    return store
 
 
 async def _run(event):
@@ -73,12 +97,8 @@ class TestAuthMiddleware:
 
 
 class TestGroupAllowlist:
-    def _store(self):
-        from src.services.chat_store import ChatStore
-        return ChatStore("")  # in-memory, no file
-
     async def test_allowed_user_in_group_activates_it(self, monkeypatch):
-        store = self._store()
+        store = _store()
         _patch_allowed(monkeypatch, {42}, store)
         event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
         event.from_user.id = 42
@@ -87,7 +107,7 @@ class TestGroupAllowlist:
         assert store.contains(-100)  # remembered for other members
 
     async def test_other_member_passes_in_activated_group(self, monkeypatch):
-        store = self._store()
+        store = _store()
         store.add(-100)  # already activated by an allowed user
         _patch_allowed(monkeypatch, {42}, store)
         event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
@@ -96,7 +116,7 @@ class TestGroupAllowlist:
         assert hit is True
 
     async def test_stranger_in_unknown_group_blocked(self, monkeypatch):
-        store = self._store()
+        store = _store()
         _patch_allowed(monkeypatch, {42}, store)
         event = _make_event(chat=SimpleNamespace(id=-555, type="supergroup"))
         event.from_user.id = 777
@@ -104,10 +124,76 @@ class TestGroupAllowlist:
         assert hit is False
 
     async def test_private_chat_not_remembered(self, monkeypatch):
-        store = self._store()
+        store = _store()
         _patch_allowed(monkeypatch, {42}, store)
         event = _make_event(chat=SimpleNamespace(id=42, type="private"))
         event.from_user.id = 42
         hit, _ = await _run(event)
         assert hit is True
         assert not store.contains(42)  # private chats aren't allowlisted
+
+
+class TestTopicRestriction:
+    async def test_wrong_topic_in_locked_group_dropped(self, monkeypatch):
+        store = _store()
+        _patch_allowed(monkeypatch, {42}, store)
+        _patch_topic_lock(monkeypatch, {-100: 7})
+        event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
+        event.from_user.id = 42
+        event.is_topic_message = True
+        event.message_thread_id = 3
+        hit, _ = await _run(event)
+        assert hit is False
+
+    async def test_general_topic_dropped_when_locked(self, monkeypatch):
+        store = _store()
+        _patch_allowed(monkeypatch, {42}, store)
+        _patch_topic_lock(monkeypatch, {-100: 7})
+        event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
+        event.from_user.id = 42
+        # "General" messages: is_topic_message False, no thread id.
+        hit, _ = await _run(event)
+        assert hit is False
+
+    async def test_matching_topic_passes(self, monkeypatch):
+        store = _store()
+        _patch_allowed(monkeypatch, {42}, store)
+        _patch_topic_lock(monkeypatch, {-100: 7})
+        event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
+        event.from_user.id = 42
+        event.is_topic_message = True
+        event.message_thread_id = 7
+        hit, _ = await _run(event)
+        assert hit is True
+
+    async def test_unlocked_group_allows_any_topic(self, monkeypatch):
+        store = _store()
+        _patch_allowed(monkeypatch, {42}, store)
+        _patch_topic_lock(monkeypatch, {})  # no lock recorded for this chat
+        event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
+        event.from_user.id = 42
+        event.is_topic_message = True
+        event.message_thread_id = 99
+        hit, _ = await _run(event)
+        assert hit is True
+
+    async def test_private_chat_unaffected_by_lock(self, monkeypatch):
+        _patch_allowed(monkeypatch, {42})
+        _patch_topic_lock(monkeypatch, {42: 7})
+        event = _make_event(chat=SimpleNamespace(id=42, type="private"))
+        event.from_user.id = 42
+        hit, _ = await _run(event)
+        assert hit is True
+
+    async def test_topic_command_bypasses_lock(self, monkeypatch):
+        """/topic must always be reachable so a locked chat can't get stuck."""
+        store = _store()
+        _patch_allowed(monkeypatch, {42}, store)
+        _patch_topic_lock(monkeypatch, {-100: 7})
+        event = _make_event(chat=SimpleNamespace(id=-100, type="supergroup"))
+        event.from_user.id = 42
+        event.text = "/topic status"
+        event.is_topic_message = True
+        event.message_thread_id = 3  # not the locked topic
+        hit, _ = await _run(event)
+        assert hit is True

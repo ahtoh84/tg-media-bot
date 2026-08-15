@@ -11,22 +11,42 @@ logger = get_logger()
 
 
 async def auth_middleware(handler, event: Message, data):
-    """Gate every message on the allowlist. Empty ALLOWED_USERS = open to all.
+    """Gate every message on the allowlist and each chat's forum-topic lock.
 
     Access is granted if the sender is an allowed user, OR the message is in a
     group that an allowed user previously activated the bot in. When an allowed
     user uses the bot in a group, that group is remembered so its other members
-    can use it too.
+    can use it too. Empty ALLOWED_USERS = open to all users (the per-chat topic
+    lock below still applies).
     """
-    allowed = get_settings().allowed_users
+    settings = get_settings()
+
+    # Message has .chat/.message_thread_id directly; CallbackQuery carries its
+    # underlying message on .message.
+    msg = event if hasattr(event, "message_thread_id") else getattr(event, "message", None)
+    chat = getattr(msg, "chat", None)
+    text = getattr(msg, "text", None) or ""
+
+    if chat is not None and getattr(chat, "type", None) in ("group", "supergroup") and not text.startswith("/topic"):
+        from ..services.topic_lock import get_topic_lock_store
+
+        locked_topic = get_topic_lock_store().get(chat.id)
+        if locked_topic is not None:
+            thread_id = getattr(msg, "message_thread_id", None) if getattr(msg, "is_topic_message", False) else None
+            if thread_id != locked_topic:
+                # Outside the locked topic (including "General"): ignore
+                # silently, don't spam other topics with a denial reply.
+                # /topic itself is exempt above so a locked chat can always be
+                # managed, even from outside the locked topic.
+                return
+
+    allowed = settings.allowed_users
     if not allowed:
         return await handler(event, data)
 
     from ..services.chat_store import get_chat_store
 
     user = event.from_user
-    # Message has .chat directly; CallbackQuery carries it on .message.
-    chat = getattr(event, "chat", None) or getattr(getattr(event, "message", None), "chat", None)
     store = get_chat_store()
 
     user_ok = user is not None and user.id in allowed
@@ -61,6 +81,7 @@ def create_router(bot: Bot) -> Dispatcher:
     dp.message.register(cmd_status, Command("status"))
     dp.message.register(cmd_formats, Command("formats"))
     dp.message.register(cmd_minimal, Command("minimal"))
+    dp.message.register(cmd_topic, Command("topic"))
 
     # Inline quality-picker button presses
     @dp.callback_query(lambda c: (c.data or "").startswith("q:"))
@@ -135,3 +156,10 @@ async def cmd_minimal(message, bot: Bot):
     from ..commands import CommandHandlers
     ch = CommandHandlers(bot)
     await ch.cmd_minimal(message)
+
+
+async def cmd_topic(message, bot: Bot):
+    """Handle /topic command."""
+    from ..commands import CommandHandlers
+    ch = CommandHandlers(bot)
+    await ch.cmd_topic(message)

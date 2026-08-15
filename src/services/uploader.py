@@ -115,6 +115,7 @@ class UploaderService:
         duration: float = 0.0,
         thumbnail_path: Optional[Path] = None,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
         supports_streaming: bool = True,
         minimal: bool = False,
     ) -> Optional[Message]:
@@ -129,6 +130,8 @@ class UploaderService:
             duration: Video length in seconds (shown by Telegram)
             thumbnail_path: Optional poster image shown before playback
             reply_to_message_id: Optional message to reply to
+            message_thread_id: Optional forum topic to post into (else lands
+                in the chat's "General" topic)
             supports_streaming: Enable streaming for large videos
             minimal: If True, send with no caption (minimal UI mode)
 
@@ -152,6 +155,7 @@ class UploaderService:
                 duration=int(duration) if duration else None,
                 thumbnail=InputFile(thumb) if thumb else None,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
                 supports_streaming=supports_streaming,
             )
 
@@ -172,6 +176,7 @@ class UploaderService:
                 caption=caption,
                 source_url=source_url,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
                 minimal=minimal,
             )
 
@@ -186,6 +191,7 @@ class UploaderService:
         thumbnail_path: Optional[Path] = None,
         source_url: Optional[str] = None,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
         minimal: bool = False,
     ) -> Optional[Message]:
         """
@@ -201,6 +207,8 @@ class UploaderService:
             thumbnail_path: Optional cover-art image to attach
             source_url: Original media URL, shown as plain text in the caption
             reply_to_message_id: Optional message to reply to
+            message_thread_id: Optional forum topic to post into (else lands
+                in the chat's "General" topic)
             minimal: If True, send with no caption (minimal UI mode); the
                 title/performer/cover-art player metadata are kept regardless
 
@@ -229,6 +237,7 @@ class UploaderService:
                 duration=int(duration) if duration else None,
                 thumbnail=InputFile(thumb) if thumb else None,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
             )
 
             logger.info(
@@ -251,6 +260,7 @@ class UploaderService:
         caption: str = "",
         source_url: Optional[str] = None,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
         minimal: bool = False,
     ) -> Optional[Message]:
         """
@@ -262,6 +272,8 @@ class UploaderService:
             caption: Optional caption (title text)
             source_url: Original media URL, shown as plain text in the caption
             reply_to_message_id: Optional message to reply to
+            message_thread_id: Optional forum topic to post into (else lands
+                in the chat's "General" topic)
             minimal: If True, send with no caption (minimal UI mode)
 
         Returns:
@@ -280,6 +292,7 @@ class UploaderService:
                 caption=None if minimal else _build_caption(caption, source_url),
                 parse_mode="HTML",
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
             )
 
             logger.info(
@@ -305,6 +318,7 @@ class UploaderService:
         thumbnail_path: Optional[Path] = None,
         source_url: Optional[str] = None,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
         minimal: bool = False,
     ) -> Optional[Message]:
         """
@@ -322,6 +336,8 @@ class UploaderService:
             thumbnail_path: Optional cover art (audio only)
             source_url: Original media URL, shown as plain text in the caption
             reply_to_message_id: Optional message to reply to
+            message_thread_id: Optional forum topic to post into (else lands
+                in the chat's "General" topic)
             minimal: If True, send with no caption (minimal UI mode)
 
         Returns:
@@ -343,6 +359,7 @@ class UploaderService:
                 thumbnail_path=thumbnail_path,
                 source_url=source_url,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
                 minimal=minimal,
             )
 
@@ -358,6 +375,7 @@ class UploaderService:
                 duration=duration,
                 thumbnail_path=thumbnail_path,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
                 minimal=minimal,
             )
 
@@ -368,6 +386,7 @@ class UploaderService:
             caption=title,
             source_url=source_url,
             reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id,
             minimal=minimal,
         )
 
@@ -377,6 +396,7 @@ class UploaderService:
         entry: dict,
         source_url: Optional[str] = None,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
         minimal: bool = False,
     ) -> Optional[Message]:
         """Resend a previously uploaded file by its cached file_id (instant).
@@ -394,16 +414,19 @@ class UploaderService:
                 chat_id=chat_id, audio=file_id, caption=caption, parse_mode="HTML",
                 title=entry.get("title") or None, performer=entry.get("performer") or None,
                 duration=duration, reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
             )
         if kind == "video":
             return await self.bot.send_video(
                 chat_id=chat_id, video=file_id, caption=caption, parse_mode="HTML",
                 duration=duration, supports_streaming=True,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
             )
         return await self.bot.send_document(
             chat_id=chat_id, document=file_id, caption=caption, parse_mode="HTML",
             reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id,
         )
 
     async def send_progress_message(
@@ -411,6 +434,7 @@ class UploaderService:
         chat_id: int,
         text: str,
         reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
     ) -> Optional[Message]:
         """Send a simple progress/status message."""
         try:
@@ -418,6 +442,7 @@ class UploaderService:
                 chat_id=chat_id,
                 text=text,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
             )
         except Exception as e:
             logger.error(f"Failed to send message: {e}")

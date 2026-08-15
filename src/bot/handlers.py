@@ -55,6 +55,8 @@ class BotHandlers:
         # short token -> URL, for the inline quality picker (callback_data is
         # capped at 64 bytes, so the URL can't ride along in it).
         self._pending: dict[str, str] = {}
+        # Lazily fetched and cached; used to detect @mentions of the bot.
+        self._bot_username: Optional[str] = None
 
     def stash_url(self, url: str) -> str:
         """Store a URL for the quality picker and return a short token."""
@@ -85,12 +87,15 @@ class BotHandlers:
             await callback.message.edit_text(f"✅ Selected: {label}")
         except TelegramAPIError:
             pass
+        picker_msg = callback.message
+        thread_id = picker_msg.message_thread_id if picker_msg.is_topic_message else None
         await self.enqueue_download(
-            chat_id=callback.message.chat.id,
+            chat_id=picker_msg.chat.id,
             user_id=callback.from_user.id,
             url=url,
             preferred_format=preferred_format,
             max_height=max_height,
+            message_thread_id=thread_id,
         )
 
     def get_user_state(self, user_id: int) -> DownloadState:
@@ -111,11 +116,13 @@ class BotHandlers:
     async def process_download(self, message: types.Message, url: str):
         """Process a download request from a plain URL message."""
         user_state = self.get_user_state(message.from_user.id)
+        thread_id = message.message_thread_id if message.is_topic_message else None
         await self.enqueue_download(
             chat_id=message.chat.id,
             user_id=message.from_user.id,
             url=url,
             preferred_format=user_state.preferred_format,
+            message_thread_id=thread_id,
         )
 
     async def enqueue_download(
@@ -125,15 +132,21 @@ class BotHandlers:
         url: str,
         preferred_format: MediaFormat,
         max_height: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
     ):
         """Validate, queue, acknowledge, and spawn a background download.
 
         Shared by the plain-URL path and the inline quality picker.
+        ``message_thread_id`` keeps every reply in the forum topic the
+        request came from — without it Telegram posts to "General".
         """
         logger.info("Download request received", user_id=user_id, url=url[:80])
 
         if not self.downloader.validate_url(url):
-            await self.bot.send_message(chat_id, "❌ Invalid URL. Please provide a valid media URL.")
+            await self.bot.send_message(
+                chat_id, "❌ Invalid URL. Please provide a valid media URL.",
+                message_thread_id=message_thread_id,
+            )
             return
 
         platform = self.downloader.detect_platform(url)
@@ -145,7 +158,7 @@ class BotHandlers:
             max_height=max_height,
         )
         if not task:
-            await self.bot.send_message(chat_id, f"❌ {error}")
+            await self.bot.send_message(chat_id, f"❌ {error}", message_thread_id=message_thread_id)
             return
 
         task.platform = platform
@@ -161,6 +174,7 @@ class BotHandlers:
                 f"Task ID: `{task.task_id}`\n"
                 f"Quality: {quality}",
                 parse_mode="Markdown",
+                message_thread_id=message_thread_id,
             )
             status_msg_id = status_msg.message_id
 
@@ -168,7 +182,7 @@ class BotHandlers:
 
         # Process download in background; keep a handle so /cancel can stop it.
         bg = asyncio.create_task(
-            self._process_download_task(task, chat_id, status_msg_id, minimal)
+            self._process_download_task(task, chat_id, status_msg_id, minimal, message_thread_id)
         )
         self._running_tasks[task.task_id] = bg
         bg.add_done_callback(
@@ -190,7 +204,8 @@ class BotHandlers:
         return True
 
     async def _process_download_task(
-        self, task, chat_id: int, status_msg_id: Optional[int], minimal: bool = False
+        self, task, chat_id: int, status_msg_id: Optional[int], minimal: bool = False,
+        message_thread_id: Optional[int] = None,
     ):
         """Background task to process a download.
 
@@ -213,7 +228,8 @@ class BotHandlers:
             if cached:
                 try:
                     msg = await self.uploader.send_cached(
-                        chat_id, cached, source_url=task.url, minimal=minimal
+                        chat_id, cached, source_url=task.url, minimal=minimal,
+                        message_thread_id=message_thread_id,
                     )
                     if msg:
                         if status_msg_id is not None:
@@ -284,7 +300,8 @@ class BotHandlers:
             if not result.success:
                 await self._notify_error(
                     chat_id, status_msg_id,
-                    f"❌ Download failed\n\n{friendly_error(result.error)}"
+                    f"❌ Download failed\n\n{friendly_error(result.error)}",
+                    message_thread_id,
                 )
                 self.queue.update_task_status(
                     task.task_id,
@@ -320,6 +337,7 @@ class BotHandlers:
                     thumbnail_path=result.thumbnail_path,
                     source_url=task.url,
                     minimal=minimal,
+                    message_thread_id=message_thread_id,
                 )
             finally:
                 if hb is not None:
@@ -367,7 +385,7 @@ class BotHandlers:
                         error_msg += "Run the bundled Local Bot API Server to raise it to 2GB."
                 else:
                     error_msg += "Telegram rejected the file."
-                await self._notify_error(chat_id, status_msg_id, error_msg)
+                await self._notify_error(chat_id, status_msg_id, error_msg, message_thread_id)
                 self.queue.update_task_status(
                     task.task_id,
                     DownloadStatus.FAILED,
@@ -379,7 +397,8 @@ class BotHandlers:
             # re-raise so the cancellation isn't swallowed.
             self.queue.update_task_status(task.task_id, DownloadStatus.CANCELLED)
             await self._notify_error(
-                chat_id, status_msg_id, f"🚫 Cancelled.\nTask: `{task.task_id}`"
+                chat_id, status_msg_id, f"🚫 Cancelled.\nTask: `{task.task_id}`",
+                message_thread_id,
             )
             raise
 
@@ -390,7 +409,9 @@ class BotHandlers:
                 DownloadStatus.FAILED,
                 error_message=str(e),
             )
-            await self._notify_error(chat_id, status_msg_id, f"❌ Error: {str(e)[:500]}")
+            await self._notify_error(
+                chat_id, status_msg_id, f"❌ Error: {str(e)[:500]}", message_thread_id
+            )
 
         finally:
             # Release the global slot if we took one, then clean up temp files.
@@ -428,7 +449,10 @@ class BotHandlers:
         except TelegramAPIError:
             pass
 
-    async def _notify_error(self, chat_id: int, status_msg_id: Optional[int], text: str):
+    async def _notify_error(
+        self, chat_id: int, status_msg_id: Optional[int], text: str,
+        message_thread_id: Optional[int] = None,
+    ):
         """Report a failure: edit the status message if one exists, else send
         a new one. Failures are surfaced even in minimal mode, where there's
         no status message to reuse."""
@@ -436,22 +460,55 @@ class BotHandlers:
             await self._update_status_message(chat_id, status_msg_id, text)
             return
         try:
-            await self.bot.send_message(chat_id, text, parse_mode="Markdown")
+            await self.bot.send_message(
+                chat_id, text, parse_mode="Markdown", message_thread_id=message_thread_id
+            )
         except TelegramAPIError:
             pass
+
+    async def _get_bot_username(self) -> str:
+        """Fetch and cache the bot's @username, for detecting mentions."""
+        if self._bot_username is None:
+            me = await self.bot.get_me()
+            self._bot_username = me.username or ""
+        return self._bot_username
+
+    async def _is_addressed(self, message: types.Message) -> bool:
+        """Whether the bot was called out directly: a reply to one of its own
+        messages, or an @mention — as opposed to ordinary group chatter."""
+        reply = message.reply_to_message
+        if reply is not None and reply.from_user is not None and reply.from_user.id == self.bot.id:
+            return True
+
+        if not message.entities or not message.text:
+            return False
+        username = await self._get_bot_username()
+        if not username:
+            return False
+        mention = f"@{username}".lower()
+        return any(
+            e.type == "mention" and message.text[e.offset:e.offset + e.length].lower() == mention
+            for e in message.entities
+        )
 
     async def handle_message(self, message: types.Message):
         """Handle regular messages with URLs."""
         urls = self.extract_urls(message.text)
-        if not urls:
-            await message.answer(
-                "👋 Send me a URL to download media.\n"
-                "Use /help for available commands."
-            )
+        if urls:
+            for url in urls[:3]:  # Limit to 3 URLs per message
+                await self.process_download(message, url)
             return
 
-        for url in urls[:3]:  # Limit to 3 URLs per message
-            await self.process_download(message, url)
+        # No URL: in a group, only nudge back if directly addressed (reply or
+        # @mention) — otherwise stay silent so ordinary chatter isn't spammed.
+        # DMs are always meant for the bot, so always nudge there.
+        if message.chat.type != "private" and not await self._is_addressed(message):
+            return
+
+        await message.answer(
+            "👋 Send me a URL to download media.\n"
+            "Use /help for available commands."
+        )
 
     async def handle_format_command(self, message: types.Message):
         """Handle /formats command to show available formats."""

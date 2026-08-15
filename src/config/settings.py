@@ -66,6 +66,11 @@ class Settings:
     # Format: socks5h://user:pass@host:port  (or http://...)
     proxy_url: Optional[str] = None
 
+    # Optional path to a JSON file persisting per-chat forum-topic locks
+    # (toggled via /topic lock|unlock): when a chat has a lock, the bot only
+    # responds inside that one topic there. Empty = in-memory only (not saved).
+    topic_lock_file: str = ""
+
     def __post_init__(self):
         """Validate and convert settings after initialization."""
         # Bot token is required
@@ -129,4 +134,5 @@ def _load_settings() -> Settings:
         cache_file=os.getenv("MEDIA_CACHE_FILE", ""),
         minimal_mode_file=os.getenv("MINIMAL_MODE_FILE", ""),
         proxy_url=os.getenv("PROXY_URL") or None,
+        topic_lock_file=os.getenv("TOPIC_LOCK_FILE", ""),
     )

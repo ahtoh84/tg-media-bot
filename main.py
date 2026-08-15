@@ -104,6 +104,7 @@ async def main():
             BotCommand(command="status", description="Show your active downloads"),
             BotCommand(command="cancel", description="Cancel a download by task ID"),
             BotCommand(command="minimal", description="Toggle minimal UI: on|off"),
+            BotCommand(command="topic", description="Restrict bot to one forum topic: lock|unlock|status"),
         ])
         logger.info("Bot commands registered")
     except Exception as e:

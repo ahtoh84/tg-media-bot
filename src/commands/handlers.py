@@ -43,6 +43,7 @@ Send me any media URL and I'll download and send it back to you.
 /cancel &lt;task_id&gt; - Cancel a download
 /status - Show your active downloads
 /minimal on|off - Toggle minimal UI (no status messages, no caption on media)
+/topic lock|unlock|status - Restrict the bot to one forum topic in this group
 
 <b>Supported Platforms:</b>
 """
@@ -156,6 +157,49 @@ Send me any media URL and I'll download and send it back to you.
             )
         else:
             await message.answer("✅ Minimal UI mode disabled. Normal status messages and captions restored.")
+
+    async def cmd_topic(self, message: types.Message):
+        """Handle /topic — restrict the bot to one forum topic in this group.
+
+        /topic lock, sent from inside the desired topic, confines the bot to
+        that topic in this chat; every other topic (including "General") is
+        then ignored. /topic unlock lifts it. /topic itself is always
+        reachable regardless of the current lock, so a chat can't get stuck.
+        """
+        from ..services.topic_lock import get_topic_lock_store
+
+        chat = message.chat
+        if chat.type not in ("group", "supergroup"):
+            await message.answer("Topic locking only applies to group chats with forum topics enabled.")
+            return
+
+        store = get_topic_lock_store()
+        args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+        action = args[0].lower() if args else "status"
+
+        if action == "lock":
+            if not message.is_topic_message:
+                await message.answer(
+                    "Send /topic lock from inside the topic you want the bot restricted to "
+                    "(this was sent outside a topic, e.g. in \"General\")."
+                )
+                return
+            store.set(chat.id, message.message_thread_id)
+            await message.answer(
+                f"🔒 Bot restricted to this topic (id {message.message_thread_id}) in this group.\n"
+                "Other topics, including General, are now ignored. /topic unlock to undo."
+            )
+        elif action == "unlock":
+            store.clear(chat.id)
+            await message.answer("🔓 Topic restriction removed — the bot now responds in every topic here.")
+        elif action == "status":
+            locked = store.get(chat.id)
+            if locked is None:
+                await message.answer("No topic restriction set for this group.")
+            else:
+                await message.answer(f"🔒 Restricted to topic id {locked}.")
+        else:
+            await message.answer("Usage: /topic lock|unlock|status")
 
     async def cmd_formats(self, message: types.Message):
         """Handle /formats — show an inline quality picker for a URL."""
