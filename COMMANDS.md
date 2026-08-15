@@ -44,9 +44,11 @@ Send me any media URL and I'll download and send it back to you.
 /help - Show this help
 /audio - Switch to audio-only mode (MP3)
 /video - Switch to video download mode
-/formats <url> - Show available formats
+/formats <url> - Pick a download quality (buttons)
 /cancel <task_id> - Cancel a download
 /status - Show your active downloads
+/minimal on|off - Toggle minimal UI (no status messages, no caption on media)
+/topic lock|unlock|status - Restrict the bot to one forum topic in this group
 
 <b>Supported Platforms:</b>
 • YouTube
@@ -104,30 +106,27 @@ Switch to video download mode. Downloads will include video when available.
 
 ### `/formats <url>`
 
-Show available download formats for a URL.
+Show an inline quality picker for a URL — tap a button to queue that download,
+instead of using the current `/audio`/`/video` preference.
 
 **Usage:**
 ```
 /formats https://youtube.com/watch?v=...
 ```
 
-**Response:**
+**Response:** a "🎚️ Choose a quality:" message with buttons:
+
 ```
-Available formats:
-
-1. [18] video mp4 360p (6.5MB)
-2. [22] video mp4 720p (12.3MB)
-3. [137] video mp4 1080p (25.1MB)
-4. [140] audio m4a (2.1MB)
-5. [251] audio webm (1.8MB)
-
-... and 10 more formats
+[ 🎬 Best ]
+[ 1080p ]
+[ 720p ]
+[ 480p ]
+[ 🎵 Audio (MP3) ]
 ```
 
 **Notes:**
-- Shows first 20 formats
-- Lists format ID, type, extension, resolution, size
-- Use format IDs with external yt-dlp
+- A height cap that exceeds what's actually available just falls back to the best stream — every button is always valid.
+- The picker expires if the bot restarts before you tap one; just send `/formats <url>` again.
 
 ---
 
@@ -186,6 +185,59 @@ Active: 2/2
 
 ---
 
+### `/minimal on|off`
+
+Toggle minimal UI mode for the current chat: no queued/progress/"Done!"
+status messages, and uploaded media carries no title/source-URL caption —
+just the file itself. Failures are still reported.
+
+**Usage:**
+```
+/minimal on
+/minimal off
+/minimal
+```
+
+**Response:**
+```
+🤫 Minimal UI mode enabled. Downloads will be sent with no status messages and no caption.
+```
+
+Run with no argument to see the current state instead of changing it.
+
+**Notes:**
+- Per-chat, not per-user — affects everyone using the bot in that chat.
+- Persists across restarts if `MINIMAL_MODE_FILE` is set.
+
+---
+
+### `/topic lock|unlock|status`
+
+Restrict the bot to a single forum topic in a group with topics enabled.
+Once locked, messages in every other topic — including "General" — are
+ignored; `/topic` itself always still works, from any topic, so a chat can't
+get locked out of managing its own restriction.
+
+**Usage:**
+```
+/topic lock      (send from inside the topic you want the bot confined to)
+/topic unlock
+/topic status
+```
+
+**Response:**
+```
+🔒 Bot restricted to this topic (id 7) in this group.
+Other topics, including General, are now ignored. /topic unlock to undo.
+```
+
+**Notes:**
+- Per-chat — each group can lock to its own topic independently, or not lock at all.
+- Only applies to groups/supergroups with topics enabled; has no effect in a private chat.
+- Persists across restarts if `TOPIC_LOCK_FILE` is set.
+
+---
+
 ## URL Processing
 
 ### Sending URLs
@@ -218,25 +270,36 @@ During download, you'll see:
 ⏳ Queued download...
 Platform: youtube
 Task ID: `a1b2c3d4`
-Format: auto
+Quality: auto
 ```
 
 ```
 📥 Downloading...
+`███████░░░░░░░░░░░░░` 35%
+2.1MiB/s · ETA 00:12
 Task: `a1b2c3d4`
 ```
 
+The same message is edited in place as the download progresses, then briefly
+shows `🔄 Processing (merging/encoding)…` if yt-dlp needs a post-processing
+step (e.g. muxing separate audio/video streams).
+
 ```
-📤 Uploading...
-rickroll.mp4
-Size: 12.5MB
+📤 Uploading… 4s · 12 MB
+Task: `a1b2c3d4`
 ```
+
+Uploads have no real progress from the Bot API, so this is a liveness
+indicator (elapsed time + size) rather than a percentage.
 
 ```
 ✅ Done!
 rickroll.mp4
 Size: 12.5MB
 ```
+
+In minimal mode (`/minimal on`), none of the above status messages appear —
+only the final file, with no caption. Failures are still reported.
 
 ### Error Messages
 

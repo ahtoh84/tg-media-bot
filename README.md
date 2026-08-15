@@ -44,7 +44,7 @@ tg-media-bot/
 │   │   ├── handlers.py  # URL extraction, download/upload orchestration
 │   │   └── router.py    # Dispatcher, command routing, auth middleware
 │   ├── commands/
-│   │   └── handlers.py  # /start, /help, /audio, /video, /status, etc.
+│   │   └── handlers.py  # /start, /help, /audio, /video, /status, /minimal, /topic, etc.
 │   ├── config/
 │   │   └── settings.py  # Env-based settings (singleton)
 │   ├── downloaders/
@@ -52,8 +52,12 @@ tg-media-bot/
 │   ├── queue/
 │   │   └── manager.py   # Async queue + per-user rate limiting
 │   ├── services/
-│   │   ├── cleanup.py   # Temp file cleanup
-│   │   └── uploader.py  # Telegram upload (video/audio/document)
+│   │   ├── chat_store.py    # Persistent group-chat allowlist
+│   │   ├── cleanup.py       # Temp file cleanup
+│   │   ├── media_cache.py   # file_id cache for instant resends
+│   │   ├── minimal_store.py # Per-chat minimal-UI toggle
+│   │   ├── topic_lock.py    # Per-chat forum-topic restriction
+│   │   └── uploader.py      # Telegram upload (video/audio/document)
 │   ├── types/
 │   │   └── download.py  # DownloadTask, DownloadStatus, MediaFormat
 │   └── utils/
@@ -210,6 +214,8 @@ Send the bot any media **URL** (or up to 3 URLs in one message) and it downloads
 | `/formats <url>` | Show inline buttons to pick a download quality (Best / 1080p / 720p / 480p / Audio) |
 | `/status` | Show your queued/active downloads and their task IDs |
 | `/cancel <task_id>` | Cancel one of your active downloads (get the ID from `/status`) |
+| `/minimal on\|off` | Toggle minimal UI for this chat — no status/progress messages, no caption on media |
+| `/topic lock\|unlock\|status` | Restrict the bot to one forum topic in this group (see [Use in groups](#use-in-groups)) |
 
 Notes:
 - `/audio` and `/video` set a **per-user** preference that persists until changed.
