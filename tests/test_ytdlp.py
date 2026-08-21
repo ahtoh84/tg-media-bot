@@ -123,6 +123,41 @@ class TestBuildCommand:
         assert "--cookies" not in cmd
         assert "--cookies-from-browser" not in cmd
 
+    def test_user_agent_flag_present(self, dl, tmp_path):
+        cmd = dl._build_command("https://x", tmp_path, MediaFormat.AUTO)
+        assert "--user-agent" in cmd
+
+
+class TestResolveUserAgent:
+    def test_no_cookies_uses_default(self, dl):
+        dl.settings.use_browser_cookies = False
+        dl.settings.cookies_file = ""
+        assert dl._resolve_user_agent(use_cookies=True) == ytdlp_module._DEFAULT_USER_AGENT
+
+    def test_use_cookies_false_uses_default_even_if_configured(self, dl):
+        dl.settings.use_browser_cookies = True
+        dl.settings.browser_name = "firefox"
+        assert dl._resolve_user_agent(use_cookies=False) == ytdlp_module._DEFAULT_USER_AGENT
+
+    def test_matches_configured_browser(self, dl):
+        dl.settings.use_browser_cookies = True
+        dl.settings.browser_name = "firefox"
+        assert (
+            dl._resolve_user_agent(use_cookies=True)
+            == ytdlp_module._BROWSER_USER_AGENTS["firefox"]
+        )
+
+    def test_unrecognized_browser_falls_back_to_default(self, dl):
+        dl.settings.use_browser_cookies = True
+        dl.settings.browser_name = "some-obscure-browser"
+        assert dl._resolve_user_agent(use_cookies=True) == ytdlp_module._DEFAULT_USER_AGENT
+
+    def test_default_is_chrome(self):
+        # The default is deliberately the most common browser (least likely
+        # to look anomalous with no cookies attached) — pin it so a future
+        # edit can't silently swap it for a less common family.
+        assert ytdlp_module._DEFAULT_USER_AGENT == ytdlp_module._BROWSER_USER_AGENTS["chrome"]
+
 
 class TestFormatErrorDetection:
     @pytest.mark.parametrize("err,expected", [
@@ -361,6 +396,27 @@ class TestDownloadTimeout:
         assert result.success is False
         assert "timed out" in result.error.lower()
         assert proc.killed is True
+
+
+class TestGetInfo:
+    async def test_includes_user_agent(self, dl, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return json.dumps({"title": "x"}).encode(), b""
+
+        async def fake_exec(*args, **kwargs):
+            captured["cmd"] = args
+            return FakeProc()
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+        info = await dl.get_info("https://x")
+        assert info == {"title": "x"}
+        assert "--user-agent" in captured["cmd"]
 
 
 class TestCookieFallback:
