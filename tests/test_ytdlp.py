@@ -42,7 +42,11 @@ class TestFriendlyError:
 @pytest.fixture
 def dl():
     # _check_yt_dlp is patched out by the autouse conftest fixture
-    return YtDlpDownloader()
+    downloader = YtDlpDownloader()
+    # gallery-dl is installed by requirements-dev in CI, but the unit suite
+    # must remain offline. Tests that exercise the X photo path opt in below.
+    downloader._gallery_dl_available = False
+    return downloader
 
 
 class TestDetectPlatform:

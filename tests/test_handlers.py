@@ -123,6 +123,42 @@ class TestMultiMediaUpload:
         assert uploaded_paths == [first, second]
         assert task.status == DownloadStatus.COMPLETED
 
+    async def test_passes_photo_media_kind_to_uploader(self, handlers, tmp_path):
+        handlers.settings.temp_dir = tmp_path
+        handlers.cleanup.temp_base = tmp_path
+
+        task, _ = await handlers.queue.add_task(
+            user_id=7, url="https://x.com/user/status/1"
+        )
+        photo = tmp_path / "photo.jpg"
+        photo.write_bytes(b"photo")
+        handlers.downloader.download_many = AsyncMock(
+            return_value=[
+                DownloadResult(
+                    success=True,
+                    output_path=photo,
+                    file_size=5,
+                    title="photo",
+                    platform="twitter",
+                    media_kind="photo",
+                    source_order=1,
+                )
+            ]
+        )
+        uploaded_message = SimpleNamespace(
+            audio=None,
+            video=None,
+            photo=[SimpleNamespace(file_id="cached-photo")],
+            document=None,
+        )
+        handlers.uploader.upload_media = AsyncMock(return_value=uploaded_message)
+
+        await handlers._process_download_task(
+            task, chat_id=1, status_msg_id=None, minimal=True
+        )
+
+        assert handlers.uploader.upload_media.await_args.kwargs["media_kind"] == "photo"
+
 
 class TestExtractUrls:
     def test_single_url(self, handlers):

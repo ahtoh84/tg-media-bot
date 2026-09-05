@@ -50,6 +50,11 @@ def cache_entry_from_message(message: Message) -> Optional[dict]:
     if message.video:
         return {"kind": "video", "file_id": message.video.file_id,
                 "duration": message.video.duration or 0}
+    photos = getattr(message, "photo", None)
+    if photos:
+        # Telegram returns photo sizes from smallest to largest. Cache the
+        # last (highest-resolution) file_id for subsequent instant resends.
+        return {"kind": "photo", "file_id": photos[-1].file_id}
     if message.document:
         return {"kind": "document", "file_id": message.document.file_id}
     return None
@@ -98,6 +103,7 @@ class UploaderService:
     Handles:
     - Video uploads
     - Audio uploads
+    - Photo uploads
     - Captioned media
     - Progress tracking
     - Error handling
@@ -105,6 +111,54 @@ class UploaderService:
 
     def __init__(self, bot: Bot):
         self.bot = bot
+
+    async def upload_photo(
+        self,
+        chat_id: int,
+        file_path: Path,
+        caption: str = "",
+        source_url: Optional[str] = None,
+        reply_to_message_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
+        minimal: bool = False,
+    ) -> Optional[Message]:
+        """Upload a still image as a Telegram photo.
+
+        If Telegram rejects the image (for example because its format or size
+        is not accepted as a photo), fall back to sending it as a document so
+        the media is still delivered.
+        """
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            return None
+
+        try:
+            input_file = InputFile(file_path)
+            message = await self.bot.send_photo(
+                chat_id=chat_id,
+                photo=input_file,
+                caption=None if minimal else _build_caption(caption, source_url),
+                parse_mode="HTML",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+            )
+            logger.info(
+                f"Photo uploaded: {file_path.name}",
+                size_mb=file_path.stat().st_size / (1024 * 1024),
+                message_id=message.message_id,
+            )
+            return message
+        except Exception as e:
+            logger.error(f"Photo upload failed, trying as document: {e}")
+            return await self.upload_document(
+                chat_id=chat_id,
+                file_path=file_path,
+                caption=caption,
+                source_url=source_url,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+                minimal=minimal,
+            )
 
     async def upload_video(
         self,
@@ -312,6 +366,7 @@ class UploaderService:
         chat_id: int,
         file_path: Path,
         media_format: MediaFormat,
+        media_kind: str = "",
         title: str = "",
         performer: str = "",
         duration: float = 0.0,
@@ -330,6 +385,7 @@ class UploaderService:
             chat_id: Target chat ID
             file_path: Path to media file
             media_format: Preferred format (video/audio/auto)
+            media_kind: Explicit source kind (for example ``photo``)
             title: Optional title for media
             performer: Audio performer (audio only)
             duration: Track length in seconds (audio only)
@@ -347,6 +403,20 @@ class UploaderService:
 
         # Audio formats
         audio_formats = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac"}
+
+        # X static images are identified by the downloader rather than by the
+        # user's format preference. Handle them before the audio/video branches
+        # so /audio cannot turn an image into an audio upload.
+        if media_kind == "photo":
+            return await self.upload_photo(
+                chat_id=chat_id,
+                file_path=file_path,
+                caption=title,
+                source_url=source_url,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+                minimal=minimal,
+            )
 
         if suffix in audio_formats or media_format == MediaFormat.AUDIO:
             return await self.upload_audio(
@@ -437,6 +507,12 @@ class UploaderService:
             return await self.bot.send_video(
                 chat_id=chat_id, video=file_id, caption=caption, parse_mode="HTML",
                 duration=duration, supports_streaming=True,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+            )
+        if kind == "photo":
+            return await self.bot.send_photo(
+                chat_id=chat_id, photo=file_id, caption=caption, parse_mode="HTML",
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id,
             )

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.services.uploader import UploaderService
+from src.types.download import MediaFormat
 
 ffmpeg_available = shutil.which("ffmpeg") is not None
 requires_ffmpeg = pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg not installed")
@@ -100,3 +101,26 @@ class TestUploadVideoThumbnail:
 
         bot.send_video.assert_awaited_once()
         assert bot.send_video.await_args.kwargs["thumbnail"] is None
+
+
+class TestUploadPhoto:
+    async def test_photo_media_is_sent_as_a_telegram_photo(self, bot, tmp_path):
+        photo = tmp_path / "photo.jpg"
+        photo.write_bytes(b"photo")
+
+        up = UploaderService(bot)
+        await up.upload_media(
+            chat_id=42,
+            file_path=photo,
+            media_format=MediaFormat.VIDEO,
+            media_kind="photo",
+            title="Photo post",
+            source_url="https://x.com/user/status/1",
+        )
+
+        bot.send_photo.assert_awaited_once()
+        bot.send_video.assert_not_awaited()
+        kwargs = bot.send_photo.await_args.kwargs
+        assert kwargs["photo"].path == photo
+        assert "Photo post" in kwargs["caption"]
+        assert "https://x.com/user/status/1" in kwargs["caption"]

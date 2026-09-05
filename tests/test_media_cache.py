@@ -59,6 +59,14 @@ class TestCacheEntryFromMessage:
         e = cache_entry_from_message(msg)
         assert e["kind"] == "video" and e["file_id"] == "V1" and e["duration"] == 99
 
+    def test_photo(self):
+        msg = SimpleNamespace(
+            audio=None, video=None,
+            photo=[SimpleNamespace(file_id="P1")],
+            document=None,
+        )
+        assert cache_entry_from_message(msg) == {"kind": "photo", "file_id": "P1"}
+
     def test_document(self):
         msg = SimpleNamespace(audio=None, video=None,
                               document=SimpleNamespace(file_id="D1"))
@@ -90,3 +98,18 @@ class TestBatchCacheResend:
         assert [call.kwargs["video"] for call in bot.send_video.await_args_list] == [
             "V1", "V2"
         ]
+
+    async def test_resends_cached_photo(self):
+        bot = MagicMock()
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=3))
+        uploader = UploaderService(bot)
+
+        last = await uploader.send_cached(
+            123,
+            {"kind": "photo", "file_id": "P1"},
+            source_url="https://x.com/p/1",
+        )
+
+        assert last.message_id == 3
+        bot.send_photo.assert_awaited_once()
+        assert bot.send_photo.await_args.kwargs["photo"] == "P1"

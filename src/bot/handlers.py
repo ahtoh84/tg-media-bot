@@ -342,6 +342,7 @@ class BotHandlers:
                         chat_id=chat_id,
                         file_path=result.output_path,
                         media_format=task.preferred_format,
+                        media_kind=result.media_kind,
                         title=result.title,
                         performer=result.performer,
                         duration=result.duration,
@@ -369,7 +370,7 @@ class BotHandlers:
             total_size = sum(result.file_size for result in successful_results)
             if not upload_failures:
                 if status_msg_id is not None:
-                    suffix = f"{len(successful_results)} videos" if len(successful_results) > 1 else first_result.output_path.name
+                    suffix = f"{len(successful_results)} media files" if len(successful_results) > 1 else first_result.output_path.name
                     await self._update_status_message(
                         chat_id, status_msg_id,
                         f"✅ Done!\n"
