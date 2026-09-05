@@ -789,7 +789,7 @@ class YtDlpDownloader:
                 "--postprocessor-args", "VideoConvertor:-movflags +faststart",
             ])
 
-        if platform == "twitter":
+        if platform == "twitter" and "--write-info-json" not in cmd:
             # Per-entry sidecars let the uploader retain the individual title
             # and duration when a post contains several videos.
             cmd.append("--write-info-json")
