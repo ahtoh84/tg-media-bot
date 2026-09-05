@@ -405,6 +405,23 @@ class UploaderService:
         a fresh download.
         """
         kind = entry["kind"]
+        if kind == "batch":
+            # Multi-entry sources (for example an X post with several videos)
+            # are cached as a list of Telegram file IDs. Resend each item in
+            # the original order and return the last message for the caller's
+            # existing truthiness check.
+            last_message = None
+            for item in entry.get("items", []):
+                last_message = await self.send_cached(
+                    chat_id=chat_id,
+                    entry=item,
+                    source_url=source_url,
+                    reply_to_message_id=reply_to_message_id,
+                    message_thread_id=message_thread_id,
+                    minimal=minimal,
+                )
+            return last_message
+
         file_id = entry["file_id"]
         caption = None if minimal else _build_caption(entry.get("title", ""), source_url)
         duration = int(entry["duration"]) if entry.get("duration") else None

@@ -2,9 +2,10 @@
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from src.services.media_cache import MediaCache
-from src.services.uploader import cache_entry_from_message
+from src.services.uploader import UploaderService, cache_entry_from_message
 
 
 class TestMediaCache:
@@ -66,3 +67,26 @@ class TestCacheEntryFromMessage:
     def test_nothing_cacheable(self):
         msg = SimpleNamespace(audio=None, video=None, document=None)
         assert cache_entry_from_message(msg) is None
+
+
+class TestBatchCacheResend:
+    async def test_resends_all_cached_items_in_order(self):
+        bot = MagicMock()
+        bot.send_video = AsyncMock(
+            side_effect=[SimpleNamespace(message_id=1), SimpleNamespace(message_id=2)]
+        )
+        uploader = UploaderService(bot)
+        entry = {
+            "kind": "batch",
+            "items": [
+                {"kind": "video", "file_id": "V1", "duration": 1},
+                {"kind": "video", "file_id": "V2", "duration": 2},
+            ],
+        }
+
+        last = await uploader.send_cached(123, entry, source_url="https://x.com/p/1")
+
+        assert last.message_id == 2
+        assert [call.kwargs["video"] for call in bot.send_video.await_args_list] == [
+            "V1", "V2"
+        ]

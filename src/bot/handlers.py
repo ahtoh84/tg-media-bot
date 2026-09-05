@@ -288,8 +288,9 @@ class BotHandlers:
                 text += f"\nTask: `{task.task_id}`"
                 await self._update_status_message(chat_id, status_msg_id, text)
 
-            # Download
-            result = await self.downloader.download(
+            # Download. A single URL can produce several media files (notably
+            # an X post with multiple videos), so keep the complete result list.
+            results = await self.downloader.download_many(
                 url=task.url,
                 output_dir=temp_dir,
                 preferred_format=task.preferred_format,
@@ -297,86 +298,110 @@ class BotHandlers:
                 max_height=task.max_height,
             )
 
-            if not result.success:
+            successful_results = [result for result in results if result.success]
+            if not successful_results:
+                result = results[0] if results else None
+                error = result.error if result else "No media files were downloaded"
                 await self._notify_error(
                     chat_id, status_msg_id,
-                    f"❌ Download failed\n\n{friendly_error(result.error)}",
+                    f"❌ Download failed\n\n{friendly_error(error)}",
                     message_thread_id,
                 )
                 self.queue.update_task_status(
                     task.task_id,
                     DownloadStatus.FAILED,
-                    error_message=result.error,
+                    error_message=error,
                 )
-                logger.download_failed(user_id, task.url, task.platform, task.task_id, result.error)
+                logger.download_failed(user_id, task.url, task.platform, task.task_id, error)
                 return
 
-            # Update with result
-            task.output_path = result.output_path
-            task.file_size = result.file_size
+            # Update with the first result for the queue's legacy single-path
+            # fields; the total size covers all files in the task.
+            first_result = successful_results[0]
+            task.output_path = first_result.output_path
+            task.file_size = sum(result.file_size for result in successful_results)
             task.status = DownloadStatus.PROCESSING
 
-            # Upload. The Bot API exposes no upload-progress callback, so run a
-            # heartbeat that shows elapsed time + size while it's in flight.
-            # Skipped in minimal mode: no status message to update.
-            hb = (
-                asyncio.create_task(
-                    self._upload_heartbeat(chat_id, status_msg_id, task.task_id, result.file_size)
+            # Upload every result in order. The Bot API exposes no upload-
+            # progress callback, so run a heartbeat for each file while it is
+            # in flight. Skipped in minimal mode: no status message to update.
+            uploaded_entries = []
+            upload_failures = []
+            for result in successful_results:
+                hb = (
+                    asyncio.create_task(
+                        self._upload_heartbeat(
+                            chat_id, status_msg_id, task.task_id, result.file_size
+                        )
+                    )
+                    if status_msg_id is not None
+                    else None
                 )
-                if status_msg_id is not None
-                else None
-            )
-            try:
-                upload_result = await self.uploader.upload_media(
-                    chat_id=chat_id,
-                    file_path=result.output_path,
-                    media_format=task.preferred_format,
-                    title=result.title,
-                    performer=result.performer,
-                    duration=result.duration,
-                    thumbnail_path=result.thumbnail_path,
-                    source_url=task.url,
-                    minimal=minimal,
-                    message_thread_id=message_thread_id,
-                )
-            finally:
-                if hb is not None:
-                    hb.cancel()
+                try:
+                    upload_result = await self.uploader.upload_media(
+                        chat_id=chat_id,
+                        file_path=result.output_path,
+                        media_format=task.preferred_format,
+                        title=result.title,
+                        performer=result.performer,
+                        duration=result.duration,
+                        thumbnail_path=result.thumbnail_path,
+                        source_url=task.url,
+                        minimal=minimal,
+                        message_thread_id=message_thread_id,
+                    )
+                finally:
+                    if hb is not None:
+                        hb.cancel()
 
-            if upload_result:
+                if upload_result:
+                    entry = cache_entry_from_message(upload_result)
+                    if entry is not None:
+                        entry["title"] = entry.get("title") or result.title or ""
+                        if result.performer and not entry.get("performer"):
+                            entry["performer"] = result.performer
+                        if result.duration and not entry.get("duration"):
+                            entry["duration"] = int(result.duration)
+                        uploaded_entries.append(entry)
+                else:
+                    upload_failures.append(result)
+
+            total_size = sum(result.file_size for result in successful_results)
+            if not upload_failures:
                 if status_msg_id is not None:
+                    suffix = f"{len(successful_results)} videos" if len(successful_results) > 1 else first_result.output_path.name
                     await self._update_status_message(
                         chat_id, status_msg_id,
                         f"✅ Done!\n"
-                        f"{result.output_path.name}\n"
-                        f"Size: {result.file_size / (1024*1024):.1f}MB"
+                        f"{suffix}\n"
+                        f"Size: {total_size / (1024*1024):.1f}MB"
                     )
                 self.queue.update_task_status(
                     task.task_id,
                     DownloadStatus.COMPLETED,
-                    str(result.output_path),
-                    result.file_size,
+                    str(first_result.output_path),
+                    total_size,
                 )
-                # Cache the file_id so repeat requests are resent instantly.
-                entry = cache_entry_from_message(upload_result)
-                if entry is not None:
-                    entry["title"] = entry.get("title") or result.title or ""
-                    if result.performer and not entry.get("performer"):
-                        entry["performer"] = result.performer
-                    if result.duration and not entry.get("duration"):
-                        entry["duration"] = int(result.duration)
-                    self.cache.put(task.url, task.preferred_format.value, entry)
+                # Cache one entry for a normal download and a batch entry for
+                # an X post so repeat requests resend every uploaded file.
+                if uploaded_entries:
+                    cache_entry = (
+                        uploaded_entries[0]
+                        if len(uploaded_entries) == 1
+                        else {"kind": "batch", "items": uploaded_entries}
+                    )
+                    self.cache.put(task.url, task.preferred_format.value, cache_entry)
                 logger.download_completed(
                     user_id, task.url, task.platform,
-                    task.task_id, result.file_size,
+                    task.task_id, total_size,
                     task.duration or 0,
                 )
             else:
-                size_mb = result.file_size / (1024 * 1024)
+                size_mb = total_size / (1024 * 1024)
                 limit_mb = self.settings.upload_limit_mb
                 error_msg = (
-                    f"❌ Upload failed.\n"
-                    f"File: {result.output_path.name}\n"
+                    f"❌ Uploaded {len(successful_results) - len(upload_failures)} "
+                    f"of {len(successful_results)} files.\n"
                     f"Size: {size_mb:.1f}MB\n\n"
                 )
                 if size_mb > limit_mb:

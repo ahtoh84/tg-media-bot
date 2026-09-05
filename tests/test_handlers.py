@@ -1,10 +1,13 @@
 """Tests for URL extraction and shared handler state."""
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.bot.handlers import BotHandlers, get_handlers
+from src.downloaders.ytdlp import DownloadResult
+from src.types.download import DownloadStatus
 from src.types.download import MediaFormat
 
 
@@ -69,6 +72,56 @@ class TestUploadHeartbeat:
         except asyncio.CancelledError:
             pass
         assert calls and "Uploading" in calls[0] and "240 MB" in calls[0]
+
+
+class TestMultiMediaUpload:
+    async def test_process_download_uploads_every_result(self, handlers, tmp_path):
+        handlers.settings.temp_dir = tmp_path
+        handlers.cleanup.temp_base = tmp_path
+
+        task, _ = await handlers.queue.add_task(
+            user_id=7, url="https://x.com/user/status/123"
+        )
+        task.platform = "twitter"
+
+        first = tmp_path / "first.mp4"
+        second = tmp_path / "second.mp4"
+        handlers.downloader.download_many = AsyncMock(
+            return_value=[
+                DownloadResult(
+                    success=True,
+                    output_path=first,
+                    file_size=10,
+                    title="first",
+                    platform="twitter",
+                ),
+                DownloadResult(
+                    success=True,
+                    output_path=second,
+                    file_size=20,
+                    title="second",
+                    platform="twitter",
+                ),
+            ]
+        )
+        uploaded_message = SimpleNamespace(
+            audio=None,
+            video=SimpleNamespace(file_id="cached-video", duration=0),
+            document=None,
+        )
+        handlers.uploader.upload_media = AsyncMock(return_value=uploaded_message)
+
+        await handlers._process_download_task(
+            task, chat_id=1, status_msg_id=None, minimal=True
+        )
+
+        assert handlers.uploader.upload_media.await_count == 2
+        uploaded_paths = [
+            call.kwargs["file_path"]
+            for call in handlers.uploader.upload_media.await_args_list
+        ]
+        assert uploaded_paths == [first, second]
+        assert task.status == DownloadStatus.COMPLETED
 
 
 class TestExtractUrls:
