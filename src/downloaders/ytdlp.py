@@ -352,12 +352,44 @@ class YtDlpDownloader:
         Returns:
             DownloadResult with success status and file info.
         """
+        results = await self.download_many(
+            url=url,
+            output_dir=output_dir,
+            preferred_format=preferred_format,
+            progress_callback=progress_callback,
+            max_height=max_height,
+        )
+        if results:
+            # Keep the original single-result API for callers outside the bot.
+            return results[0]
+        return DownloadResult(success=False, error="Download failed.")
+
+    async def download_many(
+        self,
+        url: str,
+        output_dir: Path,
+        preferred_format: MediaFormat = MediaFormat.AUTO,
+        progress_callback: Optional[callable] = None,
+        max_height: Optional[int] = None,
+    ) -> List[DownloadResult]:
+        """Download a URL and return every media item produced by yt-dlp.
+
+        Most supported URLs produce one file. X posts can contain multiple
+        videos, however, and yt-dlp exposes those as multiple playlist entries.
+        The bot needs the complete list so it can upload every entry instead of
+        selecting the largest file.
+
+        ``download`` remains the compatibility wrapper for callers that expect
+        a single ``DownloadResult``; new callers should use this method when a
+        source may contain multiple media items.
+        """
         if not self.validate_url(url):
-            return DownloadResult(success=False, error="Invalid URL")
+            return [DownloadResult(success=False, error="Invalid URL")]
 
         platform = self.detect_platform(url)
         effective_format = self._effective_format(platform, preferred_format)
         logger.info(f"Starting download", platform=platform, url=url[:80])
+        existing_files = set(self._find_downloaded_files(output_dir))
 
         # Build and run.
         cmd = self._build_command(url, output_dir, effective_format, max_height=max_height)
@@ -438,7 +470,15 @@ class YtDlpDownloader:
                 )
                 result = await self._run_download(cmd, output_dir, platform, progress_callback)
 
-        return result
+        if not result.success:
+            return [result]
+
+        return self._collect_download_results(
+            result=result,
+            output_dir=output_dir,
+            platform=platform,
+            existing_files=existing_files,
+        )
 
     # Substrings in yt-dlp stderr that indicate a country/region licensing block.
     _GEO_MARKERS = (
@@ -621,7 +661,9 @@ class YtDlpDownloader:
                 logger.error(f"Download failed: {error_msg}")
                 return DownloadResult(success=False, error=error_msg, platform=platform)
 
-            # Find downloaded file
+            # Find downloaded file. Keep this legacy single-result path for
+            # direct callers of _run_download; download_many collects all
+            # media files after the process exits.
             output_file = self._find_downloaded_file(output_dir)
             if not output_file:
                 return DownloadResult(
@@ -630,27 +672,8 @@ class YtDlpDownloader:
                     platform=platform,
                 )
 
-            file_size = output_file.stat().st_size
-
-            # Collect cover art + metadata (audio downloads write these)
-            thumbnail_file = self._find_thumbnail(output_dir)
-            meta = self._read_info_json(output_dir)
-            title = meta.get("track") or meta.get("title") or output_file.stem
-            performer = meta.get("artist") or meta.get("uploader") or ""
-            try:
-                duration = float(meta.get("duration") or 0.0)
-            except (TypeError, ValueError):
-                duration = 0.0
-
-            return DownloadResult(
-                success=True,
-                output_path=output_file,
-                file_size=file_size,
-                title=title,
-                performer=performer,
-                duration=duration,
-                thumbnail_path=thumbnail_file,
-                platform=platform,
+            return self._result_for_file(
+                output_file, output_dir, platform, use_directory_metadata=True
             )
 
         except asyncio.CancelledError:
@@ -703,7 +726,13 @@ class YtDlpDownloader:
         # (e.g. a literal "%") that make ffmpeg's own file writer choke with
         # "Error opening output files: Invalid argument" during the
         # --recode-video/--movflags postprocessing step.
-        cmd = ["yt-dlp", "--no-playlist", "--restrict-filenames"]
+        platform = self.detect_platform(url)
+        cmd = ["yt-dlp", "--restrict-filenames"]
+        # X represents a multi-video post as a playlist. Keep the historical
+        # single-entry behavior for every other site, but let X return all
+        # entries so the caller can upload the complete post.
+        if platform != "twitter":
+            cmd.append("--no-playlist")
 
         # Route through a proxy (used only for the geo-restriction fallback retry)
         if proxy:
@@ -718,7 +747,14 @@ class YtDlpDownloader:
         cmd.extend(["--user-agent", self._resolve_user_agent(use_cookies)])
 
         # Output template
-        output_template = str(output_dir / "%(title)s.%(ext)s")
+        if platform == "twitter":
+            # Include both the entry index and media id. A title-only template
+            # can collide when several videos share the same post title.
+            output_template = str(
+                output_dir / "%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
+            )
+        else:
+            output_template = str(output_dir / "%(title)s.%(ext)s")
         cmd.extend(["-o", output_template])
 
         # Format selection based on preference
@@ -753,6 +789,11 @@ class YtDlpDownloader:
                 "--postprocessor-args", "VideoConvertor:-movflags +faststart",
             ])
 
+        if platform == "twitter":
+            # Per-entry sidecars let the uploader retain the individual title
+            # and duration when a post contains several videos.
+            cmd.append("--write-info-json")
+
         # Write the raw thumbnail as-is. Deliberately NOT using
         # --convert-thumbnails: yt-dlp's own converter unconditionally forces
         # ffmpeg's "-f image2" demuxer on the input, which can't parse AVIF
@@ -786,22 +827,100 @@ class YtDlpDownloader:
 
     def _find_downloaded_file(self, directory: Path) -> Optional[Path]:
         """Find the main downloaded media file in directory."""
+        files = self._find_downloaded_files(directory)
+        return max(files, key=lambda f: f.stat().st_size) if files else None
+
+    def _find_downloaded_files(self, directory: Path) -> List[Path]:
+        """Find all completed media files in a task directory.
+
+        The filename sort is deterministic and preserves the playlist index
+        for X multi-video output (the command template prefixes it). The
+        single-file helper above intentionally keeps its old largest-file
+        semantics for compatibility with external callers.
+        """
         if not directory.exists():
-            return None
+            return []
 
-        # Find media files (exclude thumbnails)
-        media_extensions = {".mp4", ".mkv", ".webm", ".mp3", ".m4a", ".wav", ".flac", ".ogg"}
+        media_extensions = {
+            ".mp4", ".mkv", ".webm", ".mp3", ".m4a", ".wav", ".flac", ".ogg"
+        }
+        return sorted(
+            (
+                f for f in directory.iterdir()
+                if f.is_file() and f.suffix.lower() in media_extensions
+            ),
+            key=lambda f: f.name,
+        )
 
-        files = []
-        for f in directory.iterdir():
-            if f.is_file() and f.suffix.lower() in media_extensions:
-                files.append(f)
-
+    def _collect_download_results(
+        self,
+        result: DownloadResult,
+        output_dir: Path,
+        platform: str,
+        existing_files: set[Path],
+    ) -> List[DownloadResult]:
+        """Turn all files created by one yt-dlp run into result objects."""
+        files = [
+            f for f in self._find_downloaded_files(output_dir)
+            if f not in existing_files
+        ]
+        if not files and result.output_path:
+            # A pre-existing file may be reused because --no-overwrites is set,
+            # and mocked/legacy callers may return a path without creating it.
+            files = [result.output_path]
         if not files:
-            return None
+            return [
+                DownloadResult(
+                    success=False,
+                    error="Download completed but output file not found",
+                    platform=platform,
+                )
+            ]
 
-        # Return largest file (main content)
-        return max(files, key=lambda f: f.stat().st_size)
+        use_directory_metadata = len(files) == 1
+        return [
+            self._result_for_file(
+                output_file=file,
+                output_dir=output_dir,
+                platform=platform,
+                use_directory_metadata=use_directory_metadata,
+            )
+            for file in files
+        ]
+
+    def _result_for_file(
+        self,
+        output_file: Path,
+        output_dir: Path,
+        platform: str,
+        use_directory_metadata: bool = False,
+    ) -> DownloadResult:
+        """Build metadata for one completed media file."""
+        file_size = output_file.stat().st_size if output_file.exists() else 0
+        meta = self._read_info_json_for_file(output_file)
+        if not meta and use_directory_metadata:
+            meta = self._read_info_json(output_dir)
+        title = meta.get("track") or meta.get("title") or output_file.stem
+        performer = meta.get("artist") or meta.get("uploader") or ""
+        try:
+            duration = float(meta.get("duration") or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+
+        thumbnail = self._find_thumbnail_for_file(output_file)
+        if thumbnail is None and use_directory_metadata:
+            thumbnail = self._find_thumbnail(output_dir)
+
+        return DownloadResult(
+            success=True,
+            output_path=output_file,
+            file_size=file_size,
+            title=title,
+            performer=performer,
+            duration=duration,
+            thumbnail_path=thumbnail,
+            platform=platform,
+        )
 
     def _find_thumbnail(self, directory: Path) -> Optional[Path]:
         """Find the downloaded cover-art image, if any."""
@@ -821,6 +940,25 @@ class YtDlpDownloader:
         # to convert — see _build_command).
         thumbs.sort(key=lambda f: (f.suffix.lower() != ".jpg", f.name))
         return thumbs[0]
+
+    def _find_thumbnail_for_file(self, output_file: Path) -> Optional[Path]:
+        """Find a thumbnail whose basename matches one media file."""
+        for suffix in (".jpg", ".jpeg", ".png", ".webp", ".avif"):
+            candidate = output_file.with_suffix(suffix)
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _read_info_json_for_file(self, output_file: Path) -> dict:
+        """Read the sidecar metadata belonging to one media file."""
+        sidecar = output_file.with_suffix(".info.json")
+        if not sidecar.exists():
+            return {}
+        try:
+            return json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.debug(f"Could not read info json {sidecar}: {e}")
+            return {}
 
     def _read_info_json(self, directory: Path) -> dict:
         """Read the yt-dlp .info.json sidecar, if present."""

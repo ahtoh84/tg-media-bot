@@ -73,6 +73,20 @@ class TestValidateUrl:
 
 
 class TestBuildCommand:
+    def test_x_urls_allow_multiple_playlist_entries(self, dl, tmp_path):
+        cmd = dl._build_command(
+            "https://x.com/user/status/123", tmp_path, MediaFormat.VIDEO
+        )
+        assert "--no-playlist" not in cmd
+        output_template = cmd[cmd.index("-o") + 1]
+        assert "%(id)s" in output_template
+
+    def test_non_x_urls_keep_single_item_behavior(self, dl, tmp_path):
+        cmd = dl._build_command(
+            "https://youtube.com/watch?v=123", tmp_path, MediaFormat.VIDEO
+        )
+        assert "--no-playlist" in cmd
+
     def test_audio_embeds_thumbnail_and_metadata(self, dl, tmp_path):
         cmd = dl._build_command("https://x", tmp_path, MediaFormat.AUDIO)
         for flag in ("-x", "--embed-thumbnail", "--embed-metadata", "--write-info-json"):
@@ -234,6 +248,40 @@ class TestFileDiscovery:
 
     def test_find_downloaded_file_none_when_empty(self, dl, tmp_path):
         assert dl._find_downloaded_file(tmp_path) is None
+
+    def test_find_downloaded_files_returns_all_media_in_stable_order(self, dl, tmp_path):
+        second = tmp_path / "2-second [b].mp4"
+        first = tmp_path / "1-first [a].mp4"
+        second.write_bytes(b"x" * 10)
+        first.write_bytes(b"x" * 100)
+        (tmp_path / "cover.jpg").write_bytes(b"x" * 9999)
+        assert dl._find_downloaded_files(tmp_path) == [first, second]
+
+
+class TestMultiResultDownload:
+    async def test_download_many_returns_all_files_from_x_post(
+        self, dl, tmp_path, monkeypatch
+    ):
+        from src.downloaders.ytdlp import DownloadResult
+
+        async def fake_run(cmd, output_dir, platform, cb=None):
+            (output_dir / "1-first [a].mp4").write_bytes(b"first")
+            (output_dir / "2-second [b].mp4").write_bytes(b"second")
+            return DownloadResult(
+                success=True,
+                output_path=output_dir / "1-first [a].mp4",
+                platform=platform,
+            )
+
+        monkeypatch.setattr(dl, "_run_download", fake_run)
+        results = await dl.download_many(
+            "https://x.com/user/status/123", tmp_path, MediaFormat.VIDEO
+        )
+
+        assert [result.output_path.name for result in results] == [
+            "1-first [a].mp4",
+            "2-second [b].mp4",
+        ]
 
     def test_find_thumbnail_prefers_jpg(self, dl, tmp_path):
         (tmp_path / "a.png").write_bytes(b"x")
