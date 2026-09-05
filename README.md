@@ -10,7 +10,7 @@ A lightweight, self-hosted Telegram media downloader bot built with Python.
 
 ## Overview
 
-This bot downloads media from 1000+ platforms using yt-dlp and uploads the files back to Telegram. It's designed for homelab usage with minimal resource consumption and no external dependencies beyond yt-dlp and ffmpeg.
+This bot downloads media from 1000+ platforms using yt-dlp and uploads the files back to Telegram. X/Twitter posts can include static photos, multiple photos, and mixed photo/video media; gallery-dl discovers and downloads the photo items while yt-dlp handles the videos. It's designed for homelab usage with minimal resource consumption and no external dependencies beyond yt-dlp, gallery-dl, and ffmpeg.
 
 **Key Characteristics:**
 - Pure utility bot - no AI, no LLM calls
@@ -26,6 +26,7 @@ This bot downloads media from 1000+ platforms using yt-dlp and uploads the files
 - Audio-only sources (e.g. SoundCloud) are auto-detected and always fetched as tagged MP3
 - Direct media URLs (e.g. an imageboard `.webm`) are transcoded to a streamable MP4 (H.264/AAC, `moov` at the start) so Telegram plays them inline instead of attaching as a file
 - Audio results are a single post: MP3 with embedded cover art, album-art thumbnail, and title/artist/duration
+- X/Twitter photo and mixed-media posts are sent as individual Telegram photo/video messages in the original post order
 - Each result post shows the original source URL as plain (non-linked) text
 - Authenticated downloads via browser cookies (bare Python) or a mounted `cookies.txt` (Docker)
 - Unit-tested with pytest
@@ -36,7 +37,7 @@ This bot downloads media from 1000+ platforms using yt-dlp and uploads the files
 tg-media-bot/
 ├── main.py              # Entry point: builds Bot/Dispatcher, starts polling
 ├── docker-compose.yml   # Bot + local Telegram Bot API server
-├── Dockerfile           # Bot image (installs ffmpeg + yt-dlp)
+├── Dockerfile           # Bot image (installs ffmpeg + yt-dlp + gallery-dl)
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Configuration template
 ├── src/
@@ -57,7 +58,7 @@ tg-media-bot/
 │   │   ├── media_cache.py   # file_id cache for instant resends
 │   │   ├── minimal_store.py # Per-chat minimal-UI toggle
 │   │   ├── topic_lock.py    # Per-chat forum-topic restriction
-│   │   └── uploader.py      # Telegram upload (video/audio/document)
+│   │   └── uploader.py      # Telegram upload (video/audio/photo/document)
 │   ├── types/
 │   │   └── download.py  # DownloadTask, DownloadStatus, MediaFormat
 │   └── utils/
