@@ -34,7 +34,9 @@ services:
     build: .
     env_file: .env
     environment:
-      API_SERVER_URL: http://telegram-bot-api:8081
+      # Easypanel runs the Compose services on separate networks; use the
+      # published host port so the bot can reach the local Bot API service.
+      API_SERVER_URL: http://host.docker.internal:8082
       USE_BROWSER_COOKIES: "false"
       # Netscape-format cookies for authenticated downloads (Instagram etc.).
       # Drop a cookies.txt into ./cookies/ on the host — picked up per-download,
@@ -50,6 +52,8 @@ services:
       MINIMAL_MODE_FILE: /data/minimal_mode.json
       # Per-chat forum-topic locks (/topic lock|unlock) persist here
       TOPIC_LOCK_FILE: /data/topic_locks.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - bot-downloads:/tmp/tg-media-bot
       - bot-logs:/data
