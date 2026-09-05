@@ -39,9 +39,9 @@ services:
       API_SERVER_URL: http://host.docker.internal:8082
       USE_BROWSER_COOKIES: "false"
       # Netscape-format cookies for authenticated downloads (Instagram etc.).
-      # Drop a cookies.txt into ./cookies/ on the host — picked up per-download,
-      # no restart needed. Mounted read-write because yt-dlp writes refreshed
-      # cookies back to the file after each run.
+      # Store cookies.txt in the persistent bot-cookies volume at this path.
+      # It survives normal image rebuilds/redeploys and stays outside Git.
+      # Mounted read-write because yt-dlp may refresh cookies after each run.
       COOKIES_FILE: /cookies/cookies.txt
       LOG_FILE: /data/tg-media-bot.log
       # Auto-allowed groups (bot added by an ALLOWED_USER) persist here
@@ -57,7 +57,7 @@ services:
     volumes:
       - bot-downloads:/tmp/tg-media-bot
       - bot-logs:/data
-      - ./cookies:/cookies
+      - bot-cookies:/cookies
     depends_on:
       telegram-bot-api:
         condition: service_healthy
@@ -66,3 +66,4 @@ services:
 volumes:
   bot-downloads:
   bot-logs:
+  bot-cookies:

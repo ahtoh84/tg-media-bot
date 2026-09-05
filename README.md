@@ -185,7 +185,7 @@ The bot also works in group chats. When an allowed user uses it inside a group, 
 Some sources (Instagram, age-restricted videos, etc.) need a logged-in session. Two options:
 
 - **Bare Python:** set `USE_BROWSER_COOKIES=true` and `BROWSER_NAME` to pull cookies from your local browser.
-- **Docker:** export a Netscape `cookies.txt`, drop it in `./cookies/`, and it's used per-download (`COOKIES_FILE=/cookies/cookies.txt`, mounted by `docker-compose.yml`). A present `cookies.txt` takes precedence over browser cookies.
+- **Docker:** export a Netscape `cookies.txt` and place it at `/cookies/cookies.txt` inside the running `bot` container. That path is backed by the named `bot-cookies` volume, so it survives ordinary rebuilds and redeploys without putting the file in Git. A present `cookies.txt` takes precedence over browser cookies.
 
 ## Logs & Download History
 
