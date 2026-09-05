@@ -6,6 +6,7 @@ import pytest
 
 import src.downloaders.ytdlp as ytdlp_module
 from src.downloaders.ytdlp import (
+    DownloadResult,
     YtDlpDownloader,
     friendly_error,
     parse_progress_line,
@@ -256,6 +257,14 @@ class TestFileDiscovery:
         first.write_bytes(b"x" * 100)
         (tmp_path / "cover.jpg").write_bytes(b"x" * 9999)
         assert dl._find_downloaded_files(tmp_path) == [first, second]
+
+
+class TestMediaResult:
+    def test_defaults_to_a_video_with_no_source_order(self):
+        result = DownloadResult(success=True)
+
+        assert result.media_kind == "video"
+        assert result.source_order == 0
 
 
 class TestMultiResultDownload:

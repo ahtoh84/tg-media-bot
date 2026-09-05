@@ -155,6 +155,13 @@ class DownloadResult:
     error: str = ""
     performer: str = ""
     thumbnail_path: Optional[Path] = None
+    # The Telegram upload type for this downloaded asset. Existing yt-dlp
+    # outputs remain videos unless a platform-specific downloader says
+    # otherwise.
+    media_kind: str = "video"
+    # One-based source order when a post contains several media assets. Zero
+    # means the source did not expose an ordering value.
+    source_order: int = 0
 
 
 class YtDlpDownloader:
