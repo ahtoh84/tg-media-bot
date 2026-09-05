@@ -85,6 +85,9 @@ _POSTPROCESS_MARKERS = (
     "Merging formats", "Converting",
 )
 
+_TWITTER_PHOTO_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+_TWITTER_VIDEO_KINDS = {"video", "animated_gif"}
+
 
 def parse_progress_line(line: str) -> Optional[dict]:
     """Parse a yt-dlp PROG line into {percent, percent_str, speed, eta}.
@@ -164,6 +167,24 @@ class DownloadResult:
     source_order: int = 0
 
 
+@dataclass(frozen=True)
+class TwitterPhoto:
+    """One static-photo item reported by gallery-dl for an X post."""
+
+    source_order: int
+    filename: str
+    extension: str
+
+
+@dataclass(frozen=True)
+class TwitterMediaManifest:
+    """Media ordering and photo file names for one X post."""
+
+    title: str = ""
+    photos: Tuple[TwitterPhoto, ...] = ()
+    video_orders: Tuple[int, ...] = ()
+
+
 class YtDlpDownloader:
     """
     yt-dlp-based downloader for media from various platforms.
@@ -194,6 +215,10 @@ class YtDlpDownloader:
     def __init__(self):
         self.settings = get_settings()
         self._check_yt_dlp()
+        # gallery-dl is intentionally optional at runtime: if a bare-Python
+        # installation has not installed it yet, existing video downloads must
+        # retain their pre-image-support behavior.
+        self._gallery_dl_available = shutil.which("gallery-dl") is not None
 
     def _check_yt_dlp(self):
         """Verify yt-dlp is available."""
@@ -211,6 +236,15 @@ class YtDlpDownloader:
     def _cookie_args(self) -> List[str]:
         """yt-dlp cookie flags. A cookies.txt (if present) wins over browser
         cookies; in Docker the file is the only option (no browser)."""
+        cookies_file = self.settings.cookies_file
+        if cookies_file and Path(cookies_file).exists():
+            return ["--cookies", cookies_file]
+        if self.settings.use_browser_cookies:
+            return ["--cookies-from-browser", self.settings.browser_name]
+        return []
+
+    def _gallery_cookie_args(self) -> List[str]:
+        """Cookie flags for gallery-dl, matching the active yt-dlp source."""
         cookies_file = self.settings.cookies_file
         if cookies_file and Path(cookies_file).exists():
             return ["--cookies", cookies_file]
@@ -255,6 +289,179 @@ class YtDlpDownloader:
             return False
 
         return True
+
+    @staticmethod
+    def _parse_twitter_media_manifest(payload: str) -> TwitterMediaManifest:
+        """Read gallery-dl's JSON message stream for an X post.
+
+        gallery-dl exposes every X media item in post order via ``num``. Keep
+        static photos separate from videos because yt-dlp deliberately omits
+        ``photo`` media from its Twitter extractor.
+        """
+        try:
+            messages = json.loads(payload)
+        except json.JSONDecodeError:
+            return TwitterMediaManifest()
+
+        title = ""
+        photos: list[TwitterPhoto] = []
+        video_orders: list[int] = []
+
+        if not isinstance(messages, list):
+            return TwitterMediaManifest()
+
+        for message in messages:
+            if not isinstance(message, list) or not message:
+                continue
+
+            message_type = message[0]
+            if message_type == 2 and len(message) > 1 and isinstance(message[1], dict):
+                title = str(message[1].get("content") or title)
+                continue
+
+            if message_type != 3 or len(message) < 3 or not isinstance(message[2], dict):
+                continue
+
+            metadata = message[2]
+            kind = metadata.get("type")
+            order = metadata.get("num")
+            if not isinstance(kind, str) or not isinstance(order, int) or order < 1:
+                continue
+
+            if kind in _TWITTER_VIDEO_KINDS:
+                video_orders.append(order)
+                continue
+
+            if kind != "photo":
+                continue
+
+            filename = metadata.get("filename")
+            extension = metadata.get("extension")
+            if not isinstance(filename, str) or not isinstance(extension, str):
+                continue
+            if not filename or Path(filename).name != filename:
+                continue
+            extension = extension.lower().lstrip(".")
+            if extension not in _TWITTER_PHOTO_EXTENSIONS:
+                continue
+            photos.append(TwitterPhoto(order, filename, extension))
+
+        return TwitterMediaManifest(
+            title=title,
+            photos=tuple(sorted(photos, key=lambda photo: photo.source_order)),
+            video_orders=tuple(sorted(video_orders)),
+        )
+
+    def _gallery_base_command(self) -> List[str]:
+        """Build gallery-dl options shared by X inspection and downloading."""
+        cmd = [
+            "gallery-dl",
+            "--config-ignore",
+            "--no-input",
+            "--no-part",
+            "--http-timeout", str(_SOCKET_TIMEOUT),
+            # Do not let gallery-dl refresh the persistent cookies.txt volume.
+            # The user intentionally manages that file outside the image.
+            "-o", "extractor.cookies-update=false",
+        ]
+        cmd.extend(self._gallery_cookie_args())
+        cmd.extend(["--user-agent", self._resolve_user_agent(use_cookies=True)])
+        return cmd
+
+    async def _run_gallery_dl(self, cmd: List[str]) -> Tuple[bool, str, str]:
+        """Run gallery-dl under the normal download timeout."""
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.settings.download_timeout
+            )
+            return (
+                process.returncode == 0,
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace"),
+            )
+        except asyncio.TimeoutError:
+            await self._terminate(process)
+            return False, "", "gallery-dl timed out"
+        except (OSError, asyncio.SubprocessError) as e:
+            await self._terminate(process)
+            return False, "", str(e)
+
+    async def _inspect_twitter_media(
+        self, url: str
+    ) -> Optional[TwitterMediaManifest]:
+        """Return X media ordering from gallery-dl, or None on safe fallback."""
+        if not self._gallery_dl_available:
+            logger.debug("gallery-dl is unavailable; using yt-dlp video path only")
+            return None
+
+        cmd = self._gallery_base_command()
+        cmd.extend([
+            "--dump-json",
+            "--no-download",
+            "-o", "extractor.twitter.videos=true",
+            url,
+        ])
+        success, stdout, stderr = await self._run_gallery_dl(cmd)
+        if not success:
+            logger.warning(
+                f"Could not inspect X media with gallery-dl: {stderr[:200]}"
+            )
+            return None
+
+        manifest = self._parse_twitter_media_manifest(stdout)
+        if not manifest.photos and not manifest.video_orders:
+            logger.debug("gallery-dl found no X media items")
+        return manifest
+
+    async def _download_twitter_photos(
+        self,
+        url: str,
+        output_dir: Path,
+        manifest: TwitterMediaManifest,
+    ) -> List[DownloadResult]:
+        """Download only static X photos described by a media manifest."""
+        if not manifest.photos:
+            return []
+
+        photo_dir = output_dir / "photos"
+        photo_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = self._gallery_base_command()
+        cmd.extend([
+            "--directory", str(photo_dir),
+            "--filename", "{filename}.{extension}",
+            "-o", "extractor.twitter.videos=false",
+            url,
+        ])
+        success, _, stderr = await self._run_gallery_dl(cmd)
+        if not success:
+            logger.warning(f"Could not download X photos with gallery-dl: {stderr[:200]}")
+            return []
+
+        results: List[DownloadResult] = []
+        for photo in manifest.photos:
+            output_path = photo_dir / f"{photo.filename}.{photo.extension}"
+            if not output_path.is_file():
+                logger.warning(f"Expected X photo was not downloaded: {output_path.name}")
+                continue
+            results.append(
+                DownloadResult(
+                    success=True,
+                    output_path=output_path,
+                    file_size=output_path.stat().st_size,
+                    title=manifest.title or photo.filename,
+                    platform="twitter",
+                    media_kind="photo",
+                    source_order=photo.source_order,
+                )
+            )
+        return results
 
     async def get_info(self, url: str) -> Optional[dict]:
         """
@@ -398,6 +605,28 @@ class YtDlpDownloader:
         logger.info(f"Starting download", platform=platform, url=url[:80])
         existing_files = set(self._find_downloaded_files(output_dir))
 
+        manifest: Optional[TwitterMediaManifest] = None
+        photo_results: List[DownloadResult] = []
+        if platform == "twitter" and self._gallery_dl_available:
+            manifest = await self._inspect_twitter_media(url)
+            if manifest and manifest.photos:
+                photo_results = await self._download_twitter_photos(
+                    url, output_dir, manifest
+                )
+                # yt-dlp deliberately reports a photo-only X post as having no
+                # video. Avoid that expected failure path when gallery-dl has
+                # already supplied the post's complete static media.
+                if not manifest.video_orders:
+                    if photo_results:
+                        return photo_results
+                    return [
+                        DownloadResult(
+                            success=False,
+                            error="Could not download images from this X post",
+                            platform=platform,
+                        )
+                    ]
+
         # Build and run.
         cmd = self._build_command(url, output_dir, effective_format, max_height=max_height)
         result = await self._run_download(cmd, output_dir, platform, progress_callback)
@@ -478,13 +707,29 @@ class YtDlpDownloader:
                 result = await self._run_download(cmd, output_dir, platform, progress_callback)
 
         if not result.success:
+            if photo_results:
+                return sorted(
+                    photo_results,
+                    key=lambda photo: photo.source_order or 1_000_000,
+                )
             return [result]
 
-        return self._collect_download_results(
+        video_results = self._collect_download_results(
             result=result,
             output_dir=output_dir,
             platform=platform,
             existing_files=existing_files,
+        )
+        if not manifest:
+            return video_results
+
+        for video_result, source_order in zip(video_results, manifest.video_orders):
+            video_result.source_order = source_order
+
+        all_results = [*photo_results, *video_results]
+        return sorted(
+            all_results,
+            key=lambda media: media.source_order or 1_000_000,
         )
 
     # Substrings in yt-dlp stderr that indicate a country/region licensing block.

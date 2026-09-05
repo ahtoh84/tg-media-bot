@@ -1,6 +1,8 @@
 """Tests for the yt-dlp downloader wrapper (no network)."""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -141,6 +143,16 @@ class TestBuildCommand:
     def test_user_agent_flag_present(self, dl, tmp_path):
         cmd = dl._build_command("https://x", tmp_path, MediaFormat.AUTO)
         assert "--user-agent" in cmd
+
+    def test_gallery_dl_does_not_write_back_to_cookie_file(self, dl, tmp_path):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n")
+        dl.settings.cookies_file = str(cookies)
+
+        cmd = dl._gallery_base_command()
+
+        assert "--cookies" in cmd and str(cookies) in cmd
+        assert "extractor.cookies-update=false" in cmd
 
 
 class TestResolveUserAgent:
@@ -318,6 +330,109 @@ class TestMultiResultDownload:
     def test_read_info_json_invalid(self, dl, tmp_path):
         (tmp_path / "bad.info.json").write_text("{not json")
         assert dl._read_info_json(tmp_path) == {}
+
+
+class TestTwitterPhotoDownloads:
+    def test_parses_gallery_manifest_without_treating_video_as_a_photo(self, dl):
+        payload = json.dumps([
+            [2, {"content": "mixed post"}],
+            [3, "https://pbs.twimg.com/media/one?format=jpg&name=orig", {
+                "type": "photo", "num": 1, "filename": "one", "extension": "jpg",
+            }],
+            [3, "https://video.twimg.com/ext_tw_video/two.mp4", {
+                "type": "video", "num": 2, "filename": "two", "extension": "mp4",
+            }],
+            [3, "https://pbs.twimg.com/media/three?format=png&name=orig", {
+                "type": "photo", "num": 3, "filename": "three", "extension": "png",
+            }],
+        ])
+
+        manifest = dl._parse_twitter_media_manifest(payload)
+
+        assert manifest.title == "mixed post"
+        assert [(photo.source_order, photo.filename, photo.extension) for photo in manifest.photos] == [
+            (1, "one", "jpg"),
+            (3, "three", "png"),
+        ]
+        assert manifest.video_orders == (2,)
+
+    async def test_photo_only_tweet_succeeds_without_a_ytdlp_video(self, dl, tmp_path, monkeypatch):
+        photo_path = tmp_path / "photos" / "one.jpg"
+        photo_path.parent.mkdir()
+        photo_path.write_bytes(b"photo")
+        manifest = SimpleNamespace(
+            photos=(SimpleNamespace(source_order=1, filename="one", extension="jpg"),),
+            video_orders=(),
+        )
+        photo_result = DownloadResult(
+            success=True,
+            output_path=photo_path,
+            file_size=photo_path.stat().st_size,
+            media_kind="photo",
+            source_order=1,
+            platform="twitter",
+        )
+        dl._gallery_dl_available = True
+        monkeypatch.setattr(
+            dl, "_inspect_twitter_media", AsyncMock(return_value=manifest), raising=False
+        )
+        monkeypatch.setattr(
+            dl, "_download_twitter_photos", AsyncMock(return_value=[photo_result]), raising=False
+        )
+        monkeypatch.setattr(
+            dl,
+            "_run_download",
+            AsyncMock(return_value=DownloadResult(success=False, error="No video could be found")),
+        )
+
+        results = await dl.download_many(
+            "https://x.com/user/status/123", tmp_path, MediaFormat.VIDEO
+        )
+
+        assert [(result.media_kind, result.output_path) for result in results] == [
+            ("photo", photo_path),
+        ]
+
+    async def test_mixed_tweet_returns_photo_video_photo_in_source_order(
+        self, dl, tmp_path, monkeypatch
+    ):
+        first_photo = tmp_path / "photos" / "one.jpg"
+        last_photo = tmp_path / "photos" / "three.png"
+        first_photo.parent.mkdir()
+        first_photo.write_bytes(b"first photo")
+        last_photo.write_bytes(b"last photo")
+        manifest = SimpleNamespace(
+            photos=(
+                SimpleNamespace(source_order=1, filename="one", extension="jpg"),
+                SimpleNamespace(source_order=3, filename="three", extension="png"),
+            ),
+            video_orders=(2,),
+        )
+        photos = [
+            DownloadResult(success=True, output_path=first_photo, media_kind="photo", source_order=1),
+            DownloadResult(success=True, output_path=last_photo, media_kind="photo", source_order=3),
+        ]
+
+        async def fake_video_download(cmd, output_dir, platform, cb=None):
+            video = output_dir / "2-video [two].mp4"
+            video.write_bytes(b"video")
+            return DownloadResult(success=True, output_path=video, platform=platform)
+
+        dl._gallery_dl_available = True
+        monkeypatch.setattr(
+            dl, "_inspect_twitter_media", AsyncMock(return_value=manifest), raising=False
+        )
+        monkeypatch.setattr(
+            dl, "_download_twitter_photos", AsyncMock(return_value=photos), raising=False
+        )
+        monkeypatch.setattr(dl, "_run_download", fake_video_download)
+
+        results = await dl.download_many(
+            "https://x.com/user/status/123", tmp_path, MediaFormat.VIDEO
+        )
+
+        assert [result.media_kind for result in results] == ["photo", "video", "photo"]
+        assert [result.source_order for result in results] == [1, 2, 3]
 
 
 class TestFormatsList:

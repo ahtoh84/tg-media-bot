@@ -13,5 +13,8 @@ structlog>=24.0.0
 # yt-dlp (system install, but include for API reference)
 # yt-dlp>=2024.0.0
 
+# X static-photo extraction (used alongside yt-dlp's video extractor)
+gallery-dl>=1.32.0
+
 # ffmpeg (system install required)
 # ffmpeg-python>=0.2.0
