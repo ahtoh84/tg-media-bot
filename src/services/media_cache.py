@@ -19,6 +19,22 @@ def _key(url: str, fmt: str) -> str:
     return f"{fmt}\n{url}"
 
 
+def video_dimensions_are_known(entry: dict) -> bool:
+    """Return whether every cached video entry has explicit dimensions.
+
+    Older cache files predate the aspect-ratio fix and contain video file IDs
+    without dimensions. Those entries must be refreshed instead of being
+    resent with metadata that can make Telegram display the video as square.
+    """
+    kind = entry.get("kind")
+    if kind == "video":
+        return bool(entry.get("width") and entry.get("height"))
+    if kind == "batch":
+        items = entry.get("items", [])
+        return all(video_dimensions_are_known(item) for item in items)
+    return True
+
+
 class MediaCache:
     """Maps (url, format) → a small dict describing an uploaded Telegram file."""
 

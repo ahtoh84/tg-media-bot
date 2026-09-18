@@ -75,6 +75,48 @@ class TestUploadHeartbeat:
 
 
 class TestMultiMediaUpload:
+    async def test_old_video_cache_entry_is_refreshed(self, handlers, tmp_path):
+        handlers.settings.temp_dir = tmp_path
+        handlers.cleanup.temp_base = tmp_path
+
+        task, _ = await handlers.queue.add_task(
+            user_id=7, url="https://x.com/user/status/old-cache"
+        )
+        handlers.cache.put(
+            task.url,
+            task.preferred_format.value,
+            {"kind": "video", "file_id": "old-video", "duration": 99},
+        )
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"video")
+        handlers.downloader.download_many = AsyncMock(
+            return_value=[
+                DownloadResult(
+                    success=True,
+                    output_path=clip,
+                    file_size=5,
+                    title="clip",
+                    platform="twitter",
+                )
+            ]
+        )
+        uploaded_message = SimpleNamespace(
+            audio=None,
+            video=SimpleNamespace(
+                file_id="new-video", duration=99, width=1920, height=1080
+            ),
+            document=None,
+        )
+        handlers.uploader.upload_media = AsyncMock(return_value=uploaded_message)
+
+        await handlers._process_download_task(
+            task, chat_id=1, status_msg_id=None, minimal=True
+        )
+
+        handlers.downloader.download_many.assert_awaited_once()
+        assert handlers.uploader.upload_media.await_count == 1
+
     async def test_process_download_uploads_every_result(self, handlers, tmp_path):
         handlers.settings.temp_dir = tmp_path
         handlers.cleanup.temp_base = tmp_path

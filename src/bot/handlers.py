@@ -14,7 +14,7 @@ from ..downloaders import YtDlpDownloader
 from ..downloaders.ytdlp import friendly_error, render_progress_bar
 from ..queue import get_queue_manager
 from ..services.cleanup import get_cleanup_service
-from ..services.media_cache import get_media_cache
+from ..services.media_cache import get_media_cache, video_dimensions_are_known
 from ..services.minimal_store import get_minimal_store
 from ..services.uploader import UploaderService, cache_entry_from_message
 from ..types.download import DownloadStatus, MediaFormat
@@ -225,6 +225,12 @@ class BotHandlers:
         try:
             # Instant re-send if we've already uploaded this URL+format.
             cached = self.cache.get(task.url, task.preferred_format.value)
+            if cached and not video_dimensions_are_known(cached):
+                # Entries written before explicit video dimensions were sent
+                # can preserve the wrong square presentation ratio forever.
+                # Force one fresh upload so the corrected metadata is cached.
+                self.cache.evict(task.url, task.preferred_format.value)
+                cached = None
             if cached:
                 try:
                     msg = await self.uploader.send_cached(

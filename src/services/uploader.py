@@ -2,6 +2,7 @@
 
 import asyncio
 import html
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -48,8 +49,13 @@ def cache_entry_from_message(message: Message) -> Optional[dict]:
         return {"kind": "audio", "file_id": a.file_id, "title": a.title or "",
                 "performer": a.performer or "", "duration": a.duration or 0}
     if message.video:
-        return {"kind": "video", "file_id": message.video.file_id,
-                "duration": message.video.duration or 0}
+        return {
+            "kind": "video",
+            "file_id": message.video.file_id,
+            "duration": message.video.duration or 0,
+            "width": getattr(message.video, "width", 0) or 0,
+            "height": getattr(message.video, "height", 0) or 0,
+        }
     photos = getattr(message, "photo", None)
     if photos:
         # Telegram returns photo sizes from smallest to largest. Cache the
@@ -93,6 +99,48 @@ async def _prepare_thumbnail(src: Path) -> Optional[Path]:
         return dst
     except Exception as e:
         logger.debug(f"Thumbnail prep error: {e}")
+        return None
+
+
+async def _probe_video_dimensions(src: Path) -> Optional[tuple[int, int]]:
+    """Read the actual presentation dimensions from a video file.
+
+    Telegram accepts explicit video dimensions on ``send_video``. Supplying
+    them is important when a custom poster has a different aspect ratio than
+    the video itself, because otherwise some Bot API clients use the poster's
+    dimensions for both the preview and playback frame.
+    """
+    if not src or not src.exists():
+        return None
+
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+        str(src),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.debug(
+                f"Video dimension probe failed: "
+                f"{stderr.decode(errors='replace')[:200]}"
+            )
+            return None
+
+        match = re.fullmatch(r"\s*(\d+)x(\d+)\s*", stdout.decode())
+        if not match:
+            logger.debug(f"Video dimension probe returned invalid output: {stdout!r}")
+            return None
+
+        width, height = (int(value) for value in match.groups())
+        return (width, height) if width > 0 and height > 0 else None
+    except Exception as e:
+        logger.debug(f"Video dimension probe error: {e}")
         return None
 
 
@@ -197,11 +245,12 @@ class UploaderService:
             return None
 
         thumb = await _prepare_thumbnail(thumbnail_path) if thumbnail_path else None
+        dimensions = await _probe_video_dimensions(file_path)
 
         try:
             input_file = InputFile(file_path)
 
-            message = await self.bot.send_video(
+            video_kwargs = dict(
                 chat_id=chat_id,
                 video=input_file,
                 caption=None if minimal else _build_caption(caption, source_url),
@@ -212,6 +261,10 @@ class UploaderService:
                 message_thread_id=message_thread_id,
                 supports_streaming=supports_streaming,
             )
+            if dimensions:
+                video_kwargs["width"], video_kwargs["height"] = dimensions
+
+            message = await self.bot.send_video(**video_kwargs)
 
             logger.info(
                 f"Video uploaded: {file_path.name}",
@@ -504,12 +557,16 @@ class UploaderService:
                 message_thread_id=message_thread_id,
             )
         if kind == "video":
-            return await self.bot.send_video(
+            video_kwargs = dict(
                 chat_id=chat_id, video=file_id, caption=caption, parse_mode="HTML",
                 duration=duration, supports_streaming=True,
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id,
             )
+            if entry.get("width") and entry.get("height"):
+                video_kwargs["width"] = entry["width"]
+                video_kwargs["height"] = entry["height"]
+            return await self.bot.send_video(**video_kwargs)
         if kind == "photo":
             return await self.bot.send_photo(
                 chat_id=chat_id, photo=file_id, caption=caption, parse_mode="HTML",

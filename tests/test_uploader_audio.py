@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import src.services.uploader as uploader_module
 from src.services.uploader import UploaderService
 from src.types.download import MediaFormat
 
@@ -72,6 +73,37 @@ class TestUploadAudioCover:
 
 
 class TestUploadVideoThumbnail:
+    async def test_video_sends_actual_dimensions_with_thumbnail(
+        self, bot, tmp_path, monkeypatch
+    ):
+        mp4 = tmp_path / "clip.mp4"
+        mp4.write_bytes(b"video")
+        poster = tmp_path / "square-poster.jpg"
+        poster.write_bytes(b"poster")
+
+        monkeypatch.setattr(
+            uploader_module,
+            "_probe_video_dimensions",
+            AsyncMock(return_value=(1920, 1080)),
+        )
+        monkeypatch.setattr(
+            uploader_module,
+            "_prepare_thumbnail",
+            AsyncMock(return_value=poster),
+        )
+
+        up = UploaderService(bot)
+        await up.upload_video(
+            chat_id=7,
+            file_path=mp4,
+            caption="Clip",
+            thumbnail_path=poster,
+        )
+
+        kwargs = bot.send_video.await_args.kwargs
+        assert kwargs["width"] == 1920
+        assert kwargs["height"] == 1080
+
     @requires_ffmpeg
     async def test_video_sent_with_thumbnail_and_caption(self, bot, tmp_path):
         mp4 = tmp_path / "clip.mp4"

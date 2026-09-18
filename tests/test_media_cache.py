@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.media_cache import MediaCache
+from src.services.media_cache import MediaCache, video_dimensions_are_known
 from src.services.uploader import UploaderService, cache_entry_from_message
 
 
@@ -54,10 +54,22 @@ class TestCacheEntryFromMessage:
 
     def test_video(self):
         msg = SimpleNamespace(audio=None,
-                              video=SimpleNamespace(file_id="V1", duration=99),
+                              video=SimpleNamespace(
+                                  file_id="V1", duration=99, width=1920, height=1080
+                              ),
                               document=None)
         e = cache_entry_from_message(msg)
         assert e["kind"] == "video" and e["file_id"] == "V1" and e["duration"] == 99
+        assert e["width"] == 1920 and e["height"] == 1080
+
+    def test_old_video_cache_entry_requires_refresh(self):
+        assert not video_dimensions_are_known({"kind": "video", "file_id": "V1"})
+        assert video_dimensions_are_known(
+            {"kind": "video", "file_id": "V1", "width": 1920, "height": 1080}
+        )
+
+    def test_non_video_cache_entries_do_not_require_dimensions(self):
+        assert video_dimensions_are_known({"kind": "photo", "file_id": "P1"})
 
     def test_photo(self):
         msg = SimpleNamespace(
@@ -98,6 +110,26 @@ class TestBatchCacheResend:
         assert [call.kwargs["video"] for call in bot.send_video.await_args_list] == [
             "V1", "V2"
         ]
+
+    async def test_resends_cached_video_with_dimensions(self):
+        bot = MagicMock()
+        bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        uploader = UploaderService(bot)
+
+        await uploader.send_cached(
+            123,
+            {
+                "kind": "video",
+                "file_id": "V1",
+                "duration": 99,
+                "width": 1920,
+                "height": 1080,
+            },
+        )
+
+        kwargs = bot.send_video.await_args.kwargs
+        assert kwargs["width"] == 1920
+        assert kwargs["height"] == 1080
 
     async def test_resends_cached_photo(self):
         bot = MagicMock()
