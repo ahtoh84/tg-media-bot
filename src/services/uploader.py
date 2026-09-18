@@ -9,6 +9,7 @@ from typing import Optional, Union
 from aiogram import Bot
 from aiogram.types import FSInputFile as InputFile, InputMedia, Message
 
+from .media_cache import VIDEO_CACHE_VERSION
 from ..types.download import MediaFormat
 from ..utils.logger import get_logger
 
@@ -55,6 +56,7 @@ def cache_entry_from_message(message: Message) -> Optional[dict]:
             "duration": message.video.duration or 0,
             "width": getattr(message.video, "width", 0) or 0,
             "height": getattr(message.video, "height", 0) or 0,
+            "video_version": VIDEO_CACHE_VERSION,
         }
     photos = getattr(message, "photo", None)
     if photos:

@@ -4,7 +4,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.media_cache import MediaCache, video_dimensions_are_known
+from src.services.media_cache import (
+    VIDEO_CACHE_VERSION,
+    MediaCache,
+    video_dimensions_are_known,
+)
 from src.services.uploader import UploaderService, cache_entry_from_message
 
 
@@ -61,11 +65,29 @@ class TestCacheEntryFromMessage:
         e = cache_entry_from_message(msg)
         assert e["kind"] == "video" and e["file_id"] == "V1" and e["duration"] == 99
         assert e["width"] == 1920 and e["height"] == 1080
+        assert e["video_version"] == VIDEO_CACHE_VERSION
 
     def test_old_video_cache_entry_requires_refresh(self):
         assert not video_dimensions_are_known({"kind": "video", "file_id": "V1"})
         assert video_dimensions_are_known(
-            {"kind": "video", "file_id": "V1", "width": 1920, "height": 1080}
+            {
+                "kind": "video",
+                "file_id": "V1",
+                "width": 1920,
+                "height": 1080,
+                "video_version": VIDEO_CACHE_VERSION,
+            }
+        )
+
+    def test_previous_video_cache_version_requires_refresh(self):
+        assert not video_dimensions_are_known(
+            {
+                "kind": "video",
+                "file_id": "V1",
+                "width": 1920,
+                "height": 1080,
+                "video_version": 1,
+            }
         )
 
     def test_non_video_cache_entries_do_not_require_dimensions(self):

@@ -14,6 +14,11 @@ from ..utils.logger import get_logger
 
 logger = get_logger()
 
+# Bump when Telegram video upload metadata or poster handling changes. Older
+# video file_ids must be refreshed so clients do not keep stale presentation
+# metadata or a mismatched custom thumbnail.
+VIDEO_CACHE_VERSION = 2
+
 
 def _key(url: str, fmt: str) -> str:
     return f"{fmt}\n{url}"
@@ -28,7 +33,10 @@ def video_dimensions_are_known(entry: dict) -> bool:
     """
     kind = entry.get("kind")
     if kind == "video":
-        return bool(entry.get("width") and entry.get("height"))
+        return (
+            entry.get("video_version") == VIDEO_CACHE_VERSION
+            and bool(entry.get("width") and entry.get("height"))
+        )
     if kind == "batch":
         items = entry.get("items", [])
         return all(video_dimensions_are_known(item) for item in items)
