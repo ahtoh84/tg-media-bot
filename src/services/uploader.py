@@ -66,20 +66,46 @@ def cache_entry_from_message(message: Message) -> Optional[dict]:
     return None
 
 
-async def _prepare_thumbnail(src: Path) -> Optional[Path]:
+async def _prepare_thumbnail(
+    src: Path,
+    target_dimensions: Optional[tuple[int, int]] = None,
+) -> Optional[Path]:
     """Resize cover art to Telegram's thumbnail limits via ffmpeg.
 
     Returns a path to a <200KB JPEG no larger than 320x320, or None if the
-    source is missing or ffmpeg fails. Failure is non-fatal — the audio still
-    uploads without a thumbnail.
+    source is missing or ffmpeg fails. When target dimensions are supplied,
+    the output canvas uses the video's aspect ratio and letterboxes mismatched
+    artwork instead of letting a square poster define the playback frame.
+    Failure is non-fatal — the media still uploads without a thumbnail.
     """
     if not src or not src.exists():
         return None
 
     dst = src.with_name(f"{src.stem}_tg.jpg")
+    if target_dimensions:
+        video_width, video_height = target_dimensions
+        if video_width <= 0 or video_height <= 0:
+            target_dimensions = None
+
+    if target_dimensions:
+        video_width, video_height = target_dimensions
+        if video_width >= video_height:
+            canvas_width = 320
+            canvas_height = max(1, round(320 * video_height / video_width))
+        else:
+            canvas_height = 320
+            canvas_width = max(1, round(320 * video_width / video_height))
+        video_filter = (
+            f"scale={canvas_width}:{canvas_height}:"
+            f"force_original_aspect_ratio=decrease,"
+            f"pad={canvas_width}:{canvas_height}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    else:
+        video_filter = "scale=320:320:force_original_aspect_ratio=decrease"
+
     cmd = [
         "ffmpeg", "-y", "-i", str(src),
-        "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+        "-vf", video_filter,
         "-q:v", "5",
         str(dst),
     ]
@@ -244,8 +270,12 @@ class UploaderService:
             logger.error(f"File not found: {file_path}")
             return None
 
-        thumb = await _prepare_thumbnail(thumbnail_path) if thumbnail_path else None
         dimensions = await _probe_video_dimensions(file_path)
+        thumb = (
+            await _prepare_thumbnail(thumbnail_path, target_dimensions=dimensions)
+            if thumbnail_path
+            else None
+        )
 
         try:
             input_file = InputFile(file_path)

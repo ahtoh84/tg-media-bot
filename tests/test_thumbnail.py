@@ -58,3 +58,17 @@ class TestPrepareThumbnail:
         assert max(w, h) <= 320
         # 16:9 source → width should be the limiting dimension
         assert w >= h
+
+    @requires_ffmpeg
+    async def test_video_thumbnail_matches_video_aspect(self, tmp_path):
+        src = tmp_path / "square-poster.jpg"
+        _make_jpg(src, "450x450")
+        out = await _prepare_thumbnail(src, target_dimensions=(1920, 1080))
+        assert out is not None
+
+        dims = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(out)],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert dims == "320x180"

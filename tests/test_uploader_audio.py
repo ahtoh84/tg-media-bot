@@ -103,6 +103,10 @@ class TestUploadVideoThumbnail:
         kwargs = bot.send_video.await_args.kwargs
         assert kwargs["width"] == 1920
         assert kwargs["height"] == 1080
+        assert uploader_module._prepare_thumbnail.await_args.kwargs["target_dimensions"] == (
+            1920,
+            1080,
+        )
 
     @requires_ffmpeg
     async def test_video_sent_with_thumbnail_and_caption(self, bot, tmp_path):
